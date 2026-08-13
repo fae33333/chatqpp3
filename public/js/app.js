@@ -204,6 +204,7 @@ function connectSocket() {
     try { SETTINGS = await api('/api/public-settings'); applySettings(); } catch (e) { }
     try { GIFTS = await api('/api/gifts'); } catch (e) { }
     try { const me2 = await api('/api/me'); if (me2.user) ME = me2.user; } catch (e) { }   // تحديث الصلاحيات/غرف الإشراف
+    if (CUR_ROOM) api('/api/rooms/' + CUR_ROOM.id + '/users').then(u => { ROOM_USERS = u; renderUsers(); }).catch(() => { });   // تحديث الكتم/الشارات حسب الغرفة
     loadStickers();
     loadRooms();          // تحديث قائمة الغرف واللوحة المضغوطة داخل الغرفة
     if (typeof renderRoomsPanel === 'function') renderRoomsPanel();
@@ -432,7 +433,7 @@ function renderUsers() {
     <div class="users-row" data-id="${u.id}">
       <img class="ubadge" src="/badges/${badgeOf(u)}" alt="">
       <div class="uava">${avatarHtml(u.avatar)}<span class="dot ${statusDot(u.status)}"></span></div>
-      <div class="uname" style="color:${userColor(u)};font-weight:${userWeight(u)}">${esc(u.username)}${u.verified ? ' <i class="f7-icons vcheck">checkmark_seal_fill</i>' : ''}</div>
+      <div class="uname" style="color:${userColor(u)};font-weight:${userWeight(u)}">${esc(u.username)}${u.verified ? ' <i class="f7-icons vcheck">checkmark_seal_fill</i>' : ''}${u.muted ? ' <i class="f7-icons muted-ic" style="font-size:13px;color:#d97706">mic_slash_fill</i>' : ''}</div>
       <img class="ugender" src="/badges/${GENDER_IMG[u.gender] || 'secret.png'}" alt="">
     </div>`).join('') : '<div class="pv-empty"><div>لا يوجد متصلون</div></div>';
   $$('#usersList .users-row').forEach(r => r.onclick = () => openUserSheet(+r.dataset.id));
@@ -458,6 +459,9 @@ function openUserSheet(uid, msg) {
   $('#usModMute').style.display = (canModTarget && r.mute) ? '' : 'none';
   $('#usModKick').style.display = (canModTarget && r.kick) ? '' : 'none';
   $('#usModBan').style.display = (canModTarget && r.ban) ? '' : 'none';
+  // زر الكتم يتحوّل إلى «إلغاء الكتم» إذا كان المستخدم مكتوماً حالياً
+  const isMuted = !!u.muted;
+  $('#usModMute').innerHTML = `<i class="f7-icons">${isMuted ? 'mic_fill' : 'mic_slash_fill'}</i> ${isMuted ? 'إلغاء الكتم' : 'كتم المستخدم'}`;
   openOv('userSheet');
 }
 // الرد على الرسالة: شريط وردي فوق حقل الكتابة (الاسم + اقتباس + زر إلغاء)
@@ -474,7 +478,15 @@ $('#usGift').onclick = () => { closeOv('userSheet'); if (!ME.registered) return 
 $('#usUpgrade').onclick = () => { closeOv('userSheet'); if (!ME.registered) return openOv('needRegOv'); openUpgrade(CUR_TARGET); };
 $('#usModMute').onclick = async () => {
   const t = CUR_TARGET; closeOv('userSheet');
-  try { await api('/api/mod/mute', 'POST', { target_id: t.id, room_id: CUR_ROOM ? CUR_ROOM.id : 0, muted: 1 }); toast('تم كتم ' + t.username + ' (بالاي بي) 🔇'); }
+  const toMute = !t.muted;   // إن كان مكتوماً نلغيه، وإن لم يكن نكتمه
+  try {
+    await api('/api/mod/mute', 'POST', { target_id: t.id, room_id: CUR_ROOM ? CUR_ROOM.id : 0, muted: toMute });
+    t.muted = toMute;
+    const ru = ROOM_USERS.find(x => x.id === t.id);
+    if (ru) ru.muted = toMute;
+    renderUsers();
+    toast(toMute ? 'تم كتم ' + t.username + ' (بالاي بي) 🔇' : 'تم إلغاء الكتم عن ' + t.username + ' 🔊');
+  }
   catch (e) { toast(e.error || 'لا تملك صلاحية الكتم', false); }
 };
 $('#usModKick').onclick = async () => {

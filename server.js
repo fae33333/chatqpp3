@@ -91,6 +91,28 @@ async function pubMe(u) {
   const roomAdminRooms = await roomAdminRoomsOf(u.id);
   return { ...pubUser(u), room_admin_rooms: roomAdminRooms };
 }
+// بيانات/شارة العضو داخل غرفة معيّنة:
+// ادمن الغرفة يظهر كادمن فقط في غرفته المعيّنة، وفي باقي الغرف يظهر بعضويته (VIP/Plus/Premium/مسجل)
+async function pubUserInRoom(u, roomId) {
+  let rank = u.rank;
+  if (rank === 'roomadmin') {
+    const ra = await q.get(`SELECT id FROM room_admins WHERE user_id=? AND room_id=?`, u.id, +roomId);
+    if (!ra) rank = 'user';
+  }
+  const eu = { ...u, rank };
+  const p = pubUser(eu);
+  p.badge = badgeOf(eu);
+  return p;
+}
+// رسالة نظام داخل الغرفة (تُحفظ في السجل وتُبث فوراً) — مثل «تم كتم فلان من قبل فلان»
+async function roomSystemMsg(roomId, text) {
+  if (!roomId) return;
+  const ins = await q.run(`INSERT INTO messages (room_id,user_id,username,text,type) VALUES (?,0,'رسالة النظام',?,'system')`, roomId, text);
+  io.to('room_' + roomId).emit('msg', {
+    id: ins.lastID, room_id: +roomId, username: 'رسالة النظام', text, type: 'system',
+    created_at: Math.floor(Date.now() / 1000)
+  });
+}
 // ====== الاي بي (يدعم البروكسي/Cloudflare/النطاقات) ======
 function getClientIp(req) {
   const fwd = req.headers['x-forwarded-for'];
@@ -270,8 +292,12 @@ app.get('/api/rooms/:id/users', requireUser, async (req, res) => {
   if (!set) return res.json([]);
   const users = [];
   for (const uid of set) {
-    const u = onlineUsers[uid];
-    if (u) users.push(u);
+    const u = await q.get(`SELECT * FROM users WHERE id=?`, uid);
+    if (!u) continue;
+    const p = await pubUserInRoom(u, req.params.id);
+    p.status = (onlineUsers[uid] || {}).status || u.status;
+    p.muted = u.muted;
+    users.push(p);
   }
   res.json(users);
 });
@@ -364,7 +390,7 @@ app.post('/api/gifts/send', requireUser, async (req, res) => {
     io.to('room_' + room_id).emit('msg', {
       id: ins.lastID, room_id: +room_id, text: `هدية ${gift.name}`, type: 'gift', created_at: Math.floor(Date.now() / 1000),
       extra: gExtra,
-      user: { ...pubUser(me), badge: badgeOf(me) }
+      user: await pubUserInRoom(me, room_id)
     });
   }
   const vis = gift.img && !gift.img.startsWith('/') ? gift.img + ' ' : '';
@@ -702,9 +728,12 @@ app.post('/api/mod/mute', requireUser, async (req, res) => {
   if (target.ip) await q.run(`UPDATE users SET muted=? WHERE ip=? AND rank NOT IN ('superadmin','admin') AND id!=?`, m, target.ip, actor.id);
   else await q.run(`UPDATE users SET muted=? WHERE id=?`, m, target.id);
   await logMod(actor, target, m ? 'mute' : 'unmute', room_id);
+  // إعلان في العام + إشعار للمستهدَف + تحديث قائمة المتصلين
+  await roomSystemMsg(room_id, m ? `🔇 تم كتم ${target.username} من قبل ${actor.username}` : `🔊 تم إلغاء الكتم عن ${target.username} من قبل ${actor.username}`);
   if (m) io.to('user_' + target.id).emit('notify', { icon: 'mic_slash_fill', text: `تم كتمك من قبل ${actor.username}` });
+  emitRoomUsers(room_id);
   io.emit('sync');
-  res.json({ ok: true });
+  res.json({ ok: true, muted: m });
 });
 
 app.post('/api/mod/kick', requireUser, async (req, res) => {
@@ -717,6 +746,7 @@ app.post('/api/mod/kick', requireUser, async (req, res) => {
   if (target.rank === 'superadmin' || (target.rank === 'admin' && actor.rank !== 'superadmin'))
     return res.status(403).json({ error: 'لا يمكنك اتخاذ إجراء ضد هذا المستخدم' });
   await logMod(actor, target, 'kick', room_id);
+  await roomSystemMsg(room_id, `🚪 تم طرد ${target.username} من الغرفة بواسطة ${actor.username}`);
   const text = `تم طردك من الغرفة بواسطة ${actor.username}`;
   if (target.ip) {
     for (const uid of Object.keys(userSockets)) {
@@ -746,6 +776,7 @@ app.post('/api/mod/ban', requireUser, async (req, res) => {
   if (ip) await q.run(`UPDATE users SET banned=1 WHERE ip=? AND rank NOT IN ('superadmin','admin') AND id!=?`, ip, actor.id);
   else await q.run(`UPDATE users SET banned=1 WHERE id=?`, target.id);
   await logMod(actor, target, 'ban', room_id, reason);
+  await roomSystemMsg(room_id, `⛔ تم حظر ${target.username} من قبل ${actor.username}`);
   const text = `تم حظرك من قبل ${actor.username}`;
   if (ip) {
     for (const uid of Object.keys(userSockets)) {
@@ -967,11 +998,11 @@ io.on('connection', async (socket) => {
       const words = await q.all(`SELECT word FROM banned_words`);
       for (const w of words) if (text.includes(w.word)) text = text.split(w.word).join('**');
     }
-    const freshPub = { ...pubUser(me), badge: badgeOf(me) };   // صورة وبيانات حديثة من قاعدة البيانات (ليس لقطة الدخول)
-    onlineUsers[uid] = freshPub;
+    const freshPub = await pubUserInRoom(me, roomId);   // شارة/رتبة حديثة وحسب الغرفة (ادمن الغرفة فقط في غرفته)
+    onlineUsers[uid] = { ...freshPub, status: me.status };
     const rp = reply && reply.name ? { name: String(reply.name).slice(0, 40), text: String(reply.text || '').slice(0, 90) } : null;   // الرد على الرسالة
     const col = /^#[0-9a-fA-F]{6}$/.test(String(color || '')) ? String(color) : null;   // لون الخط من قائمة الألوان
-    const extra = JSON.stringify({ badge: freshPub.badge, gender: me.gender, rank: me.rank, membership: me.membership, avatar: me.avatar || '', registered: me.registered, reply: rp, color: col, verified: VERIFIED_SET.has(me.username) ? 1 : 0 });
+    const extra = JSON.stringify({ badge: freshPub.badge, gender: me.gender, rank: freshPub.rank, membership: me.membership, avatar: me.avatar || '', registered: me.registered, reply: rp, color: col, verified: VERIFIED_SET.has(me.username) ? 1 : 0 });
     const ins = await q.run(`INSERT INTO messages (room_id,user_id,username,text,type,extra) VALUES (?,?,?,?,'msg',?)`, roomId, uid, me.username, text, extra);
     const msg = {
       id: ins.lastID, room_id: +roomId, text, type: 'msg',
@@ -1013,7 +1044,12 @@ async function emitRoomUsers(roomId) {
   const list = [];
   for (const id of set) {
     const u = await q.get(`SELECT * FROM users WHERE id=?`, id);
-    if (u) { const p = pubUser(u); p.status = (onlineUsers[id] || {}).status || u.status; list.push(p); }
+    if (u) {
+      const p = await pubUserInRoom(u, roomId);   // الشارة/الرتبة حسب الغرفة (ادمن الغرفة فقط في غرفته)
+      p.status = (onlineUsers[id] || {}).status || u.status;
+      p.muted = u.muted;
+      list.push(p);
+    }
   }
   io.to('room_' + roomId).emit('roomUsers', { roomId: +roomId, users: list, count: list.length });
 }
