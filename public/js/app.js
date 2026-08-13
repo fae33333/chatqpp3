@@ -447,33 +447,21 @@ function renderUsers() {
 let US_MSG = null;   // سياق الرسالة عند فتح الورقة من النقر على صورة رسالة
 function openUserSheet(uid, msg) {
   setUsersPanel(false);
-  // النقر على اسمي يفتح ورقة مخصصة: مشاهدة حالتي + إضافة حالة
-  if (ME && uid === ME.id) {
-    CUR_TARGET = ME; US_MSG = null;
-    $('#usName').textContent = ME.username;
-    $('#usReply').style.display = 'none';
-    $('#usPrivate').style.display = 'none';
-    $('#usGift').style.display = 'none';
-    $('#usUpgrade').style.display = 'none';
-    $('#usReport').style.display = 'none';
-    $('#usModGroup').style.display = 'none';
-    const stBtn = $('#usViewStatus');
-    stBtn.style.display = STATUS_MINE.length ? '' : 'none';
-    stBtn.innerHTML = '<i class="f7-icons">sparkles</i> مشاهدة حالتي';
-    openOv('userSheet');
-    return;
-  }
+  // النقر على اسمي يفتح قائمة الحالة السريعة (تغيير الحالة + مشاهدة حالتي + إضافة حالة)
+  if (ME && uid === ME.id) { openOv('quickOv'); return; }
   let u = ROOM_USERS.find(x => x.id === uid);
   if (!u && msg) u = { id: uid, username: msg.username, avatar: msg.avatar || '', rank: msg.rank || 'user', membership: msg.membership || 'none', gender: msg.gender || 'secret' };
   if (!u) return;
   CUR_TARGET = u;
   US_MSG = msg || null;
   $('#usName').textContent = u.username;
+  $('#usRole').textContent = u.rank !== 'user' ? RANK_NAMES[u.rank] : (MEM_NAMES[u.membership] || 'زائر');
   $('#usReply').style.display = US_MSG ? '' : 'none';
   $('#usPrivate').style.display = '';
   $('#usGift').style.display = '';
   $('#usUpgrade').style.display = '';
   $('#usReport').style.display = '';
+  $('#usProfile').style.display = '';
   // إظهار أزرار الإشراف حسب صلاحيتي (ولا تظهر ضد الإداريين)
   const r = modRights();
   const canModTarget = !u || (u.rank !== 'superadmin' && !(u.rank === 'admin' && ME.rank !== 'superadmin'));
@@ -918,6 +906,8 @@ function openMenu() {
 // قائمة الحالة السريعة
 function openQuick() {
   if (!ME) return;
+  // إظهار «مشاهدة حالتي» فقط إذا كان لدي حالة منشورة
+  $('#quickStatus').style.display = STATUS_MINE.length ? '' : 'none';
   openOv('quickOv');
 }
 $$('.us-opt.st[data-status]').forEach(b => b.onclick = async () => {
@@ -928,6 +918,8 @@ $$('.us-opt.st[data-status]').forEach(b => b.onclick = async () => {
   toast('تم تغيير الحالة إلى ' + statusName(ME.status));
 });
 $('#quickAccount').onclick = () => { closeOv('quickOv'); openProfile(ME.id); };
+$('#quickStatus').onclick = () => { closeOv('quickOv'); openStatusView(ME.id); };
+$('#quickAddStatus').onclick = () => { closeOv('quickOv'); openStatusAdd(); };
 $('#quickAvatar').onclick = () => { closeOv('quickOv'); if (!ME.registered) return openOv('needRegOv'); openAvatars(); };
 // بطاقة العضو في القائمة الرئيسية تعرض قائمة الحالة السريعة
 $('#menuUserCard').onclick = () => { closeOv('menuOv'); openQuick(); };

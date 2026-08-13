@@ -366,7 +366,8 @@ body { background:#0e1220; display:flex; justify-content:center; }
 
 /* قائمة إجراءات المستخدم */
 .usheet { border-radius:22px 22px 0 0; padding:12px 14px 22px; }
-.usheet-name { text-align:center; font-weight:900; font-size:15px; padding-bottom:12px; border-bottom:1px solid #f0f1f6; margin-bottom:8px; color:var(--navy); }
+.usheet-name { text-align:center; font-weight:900; font-size:15px; padding-bottom:6px; color:var(--navy); }
+.usheet-role { text-align:center; font-size:11.5px; font-weight:800; color:#9aa0b4; padding-bottom:12px; border-bottom:1px solid #f0f1f6; margin-bottom:8px; }
 .us-opt {
   width:100%; background:none; border:0; display:flex; align-items:center; gap:12px; padding:13px 8px; font-size:14px;
   font-weight:800; color:var(--navy); cursor:pointer; border-bottom:1px solid #f6f7fa; text-align:right;
