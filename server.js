@@ -86,6 +86,63 @@ function pubUser(u) {
     verified: VERIFIED_SET.has(u.username) ? 1 : 0
   };
 }
+// بيانات العضو + الغرف التي هو ادمن لها (تُستخدم في واجهة الشات)
+async function pubMe(u) {
+  const roomAdminRooms = await roomAdminRoomsOf(u.id);
+  return { ...pubUser(u), room_admin_rooms: roomAdminRooms };
+}
+// ====== الاي بي (يدعم البروكسي/Cloudflare/النطاقات) ======
+function getClientIp(req) {
+  const fwd = req.headers['x-forwarded-for'];
+  if (fwd) { const first = String(fwd).split(',')[0].trim(); if (first) return first; }
+  if (req.headers['x-real-ip']) return String(req.headers['x-real-ip']).trim();
+  return (req.socket && req.socket.remoteAddress) || (req.connection && req.connection.remoteAddress) || '';
+}
+function getSocketIp(socket) {
+  const h = socket.handshake || {};
+  const fwd = h.headers && h.headers['x-forwarded-for'];
+  if (fwd) { const first = String(fwd).split(',')[0].trim(); if (first) return first; }
+  if (h.address) return h.address;
+  return (socket.request && socket.request.socket && socket.request.socket.remoteAddress) || '';
+}
+// الغرف التي يكون فيها العضو ادمن غرفة
+async function roomAdminRoomsOf(uid) {
+  const rows = await q.all(`SELECT room_id FROM room_admins WHERE user_id=?`, uid);
+  return rows.map(r => r.room_id);
+}
+async function isIpBanned(ip) {
+  if (!ip) return false;
+  const b = await q.get(`SELECT id FROM bans WHERE ip=? LIMIT 1`, ip);
+  return !!b;
+}
+// صلاحيات الإشراف في غرفة معينة:
+//  - سوبر ادمين / ادمن : كتم + طرد + حظر في كل الغرف
+//  - ادمن غرفة (مع تعيين لهذه الغرفة) : كتم + طرد فقط
+async function moderationRights(actor, roomId) {
+  if (!actor) return { canMute: false, canKick: false, canBan: false };
+  if (actor.rank === 'superadmin' || actor.rank === 'admin')
+    return { canMute: true, canKick: true, canBan: true };
+  if (actor.rank === 'roomadmin') {
+    const ra = await q.get(`SELECT id FROM room_admins WHERE user_id=? AND room_id=?`, actor.id, +roomId);
+    if (ra) return { canMute: true, canKick: true, canBan: false };
+  }
+  return { canMute: false, canKick: false, canBan: false };
+}
+// فصل كل مقابس مستخدم معيّن (مع إرسال حدث له أولاً)
+function disconnectUser(uid, ev, payload) {
+  const ids = (userSockets[uid] || []).slice();
+  if (ev) ids.forEach(sid => io.to(sid).emit(ev, payload));
+  setTimeout(() => {
+    (userSockets[uid] || []).slice().forEach(sid => {
+      const s = io.sockets.sockets.get(sid);
+      if (s) s.disconnect(true);
+    });
+  }, 150);
+}
+async function logMod(actor, target, action, roomId, reason) {
+  await q.run(`INSERT INTO mod_log (actor_id,actor_name,target_id,target_name,target_ip,action,room_id,reason) VALUES (?,?,?,?,?,?,?,?)`,
+    actor.id, actor.username, target.id, target.username, target.ip || '', action, +roomId || 0, reason || '');
+}
 function requireUser(req, res, next) {
   if (!req.session.uid) return res.status(401).json({ error: 'غير مسجل' });
   next();
@@ -122,47 +179,58 @@ app.post('/api/login', async (req, res) => {
   if (!u || !u.password || !bcrypt.compareSync(password, u.password))
     return res.status(400).json({ error: 'اسم المستخدم أو كلمة المرور غير صحيحة' });
   if (u.banned) return res.status(403).json({ error: 'هذا الحساب محظور' });
+  const ip = getClientIp(req);
+  if (!['superadmin', 'admin'].includes(u.rank) && await isIpBanned(ip))
+    return res.status(403).json({ error: 'تم حظر هذا الجهاز (الاي بي) من الشات' });
+  await q.run(`UPDATE users SET ip=? WHERE id=?`, ip, u.id);
   req.session.uid = u.id;
   req.session.rank = u.rank;
-  res.json({ user: pubUser(u), badge: badgeOf(u) });
+  res.json({ user: await pubMe(u), badge: badgeOf(u) });
 });
 
 app.post('/api/guest', async (req, res) => {
   let { username, gender } = req.body;
   username = (username || '').trim().slice(0, 20);
   if (!username) return res.status(400).json({ error: 'اكتب اسم المستخدم' });
+  const ip = getClientIp(req);
+  if (await isIpBanned(ip)) return res.status(403).json({ error: 'تم حظر هذا الجهاز (الاي بي) من الشات' });
   let u = await q.get(`SELECT * FROM users WHERE username=?`, username);
   if (u && u.registered) return res.status(400).json({ error: 'هذا الاسم مسجل، قم بتسجيل الدخول' });
   if (!u) {
-    const r = await q.run(`INSERT INTO users (username,gender,registered,membership,rank) VALUES (?,?,0,'none','user')`, username, gender || 'secret');
+    const r = await q.run(`INSERT INTO users (username,gender,registered,membership,rank,ip) VALUES (?,?,0,'none','user',?)`, username, gender || 'secret', ip);
     u = await q.get(`SELECT * FROM users WHERE id=?`, r.lastID);
+  } else {
+    await q.run(`UPDATE users SET ip=? WHERE id=?`, ip, u.id);
   }
   req.session.uid = u.id;
   req.session.rank = u.rank;
-  res.json({ user: pubUser(u), badge: badgeOf(u) });
+  res.json({ user: await pubMe(u), badge: badgeOf(u) });
 });
 
 app.post('/api/register', async (req, res) => {
   const { username, password, gender, age, country } = req.body;
   if (!username || !password) return res.status(400).json({ error: 'أكمل الحقول المطلوبة' });
+  const ip = getClientIp(req);
   const ex = await q.get(`SELECT id FROM users WHERE username=?`, username);
   if (ex) {
     // ضيف يحوّل حسابه لمسجل
     const old = await q.get(`SELECT * FROM users WHERE username=?`, username);
     if (old.registered) return res.status(400).json({ error: 'الاسم مستخدم مسبقا' });
-    await q.run(`UPDATE users SET password=?,gender=?,age=?,country=?,registered=1 WHERE id=?`,
-      bcrypt.hashSync(password, 10), gender || 'secret', age || 25, country || '', old.id);
+    if (await isIpBanned(ip)) return res.status(403).json({ error: 'تم حظر هذا الجهاز (الاي بي) من الشات' });
+    await q.run(`UPDATE users SET password=?,gender=?,age=?,country=?,registered=1,ip=? WHERE id=?`,
+      bcrypt.hashSync(password, 10), gender || 'secret', age || 25, country || '', ip, old.id);
     req.session.uid = old.id; req.session.rank = old.rank;
     await refreshUserEverywhere(old.id);   // تحديث الاسم/الصورة مباشرة لمن بداخل الغرف
     io.emit('sync');
-    return res.json({ user: pubUser(await q.get(`SELECT * FROM users WHERE id=?`, old.id)), badge: badgeOf(old) });
+    return res.json({ user: await pubMe(await q.get(`SELECT * FROM users WHERE id=?`, old.id)), badge: badgeOf(old) });
   }
-  const r = await q.run(`INSERT INTO users (username,password,gender,age,country,registered,balance) VALUES (?,?,?,?,?,1,10)`,
-    username, bcrypt.hashSync(password, 10), gender || 'secret', age || 25, country || '');
+  if (await isIpBanned(ip)) return res.status(403).json({ error: 'تم حظر هذا الجهاز (الاي بي) من الشات' });
+  const r = await q.run(`INSERT INTO users (username,password,gender,age,country,registered,balance,ip) VALUES (?,?,?,?,?,1,10,?)`,
+    username, bcrypt.hashSync(password, 10), gender || 'secret', age || 25, country || '', ip);
   const u = await q.get(`SELECT * FROM users WHERE id=?`, r.lastID);
   req.session.uid = u.id; req.session.rank = u.rank;
   io.emit('sync');
-  res.json({ user: pubUser(u), badge: badgeOf(u) });
+  res.json({ user: await pubMe(u), badge: badgeOf(u) });
 });
 
 app.get('/api/me', async (req, res) => {
@@ -170,7 +238,7 @@ app.get('/api/me', async (req, res) => {
   const u = await q.get(`SELECT * FROM users WHERE id=?`, req.session.uid);
   if (!u) return res.json({ user: null });
   req.session.rank = u.rank;
-  res.json({ user: pubUser(u), badge: badgeOf(u) });
+  res.json({ user: await pubMe(u), badge: badgeOf(u) });
 });
 
 app.post('/api/logout', (req, res) => { req.session.destroy(() => res.json({ ok: true })); });
@@ -545,7 +613,7 @@ app.delete('/api/admin/rooms/:id', requireAdmin, async (req, res) => {
 app.get('/api/admin/users', requireAdmin, async (req, res) => {
   const search = req.query.q || '';
   const rows = await q.all(`SELECT * FROM users WHERE username LIKE ? ORDER BY id DESC LIMIT 200`, `%${search}%`);
-  res.json(rows.map(u => ({ ...pubUser(u), banned: u.banned, muted: u.muted, badge: badgeOf(u) })));
+  res.json(rows.map(u => ({ ...pubUser(u), banned: u.banned, muted: u.muted, ip: u.ip || '', badge: badgeOf(u) })));
 });
 
 app.post('/api/admin/users', requireAdmin, async (req, res) => {
@@ -576,16 +644,158 @@ app.delete('/api/admin/users/:id', requireSuper, async (req, res) => {
 });
 
 app.post('/api/admin/users/:id/ban', requireAdmin, async (req, res) => {
-  await q.run(`UPDATE users SET banned=? WHERE id=?`, req.body.banned ? 1 : 0, req.params.id);
-  const u = await q.get(`SELECT username FROM users WHERE id=?`, req.params.id);
-  if (req.body.banned) await q.run(`INSERT OR IGNORE INTO bans (username,reason) VALUES (?,?)`, u.username, req.body.reason || '');
-  else await q.run(`DELETE FROM bans WHERE username=?`, u.username);
+  const u = await q.get(`SELECT * FROM users WHERE id=?`, req.params.id);
+  if (!u) return res.status(404).json({ error: 'المستخدم غير موجود' });
+  if (u.rank === 'superadmin') return res.status(403).json({ error: 'لا يمكنك حظر سوبر ادمين' });
+  const actor = await q.get(`SELECT id,username FROM users WHERE id=?`, req.session.uid);
+  const ip = u.ip || '';
+  if (req.body.banned) {
+    await q.run(`DELETE FROM bans WHERE (ip!='' AND ip=?) OR username=?`, ip, u.username);
+    await q.run(`INSERT INTO bans (username,ip,reason) VALUES (?,?,?)`, u.username, ip, req.body.reason || 'حظر من لوحة التحكم');
+    if (ip) await q.run(`UPDATE users SET banned=1 WHERE ip=? AND rank NOT IN ('superadmin','admin')`, ip);
+    else await q.run(`UPDATE users SET banned=1 WHERE id=?`, u.id);
+    await logMod(actor, u, 'ban', 0, req.body.reason || '');
+    if (ip) {
+      for (const uid of Object.keys(userSockets)) {
+        const t = await q.get(`SELECT * FROM users WHERE id=?`, uid);
+        if (t && t.ip === ip && !['superadmin', 'admin'].includes(t.rank)) disconnectUser(+uid, 'banned', { text: 'تم حظرك من قبل الإدارة' });
+      }
+    } else disconnectUser(u.id, 'banned', { text: 'تم حظرك من قبل الإدارة' });
+  } else {
+    await q.run(`DELETE FROM bans WHERE username=?`, u.username);
+    if (ip) await q.run(`DELETE FROM bans WHERE ip=?`, ip);
+    await q.run(`UPDATE users SET banned=0 WHERE id=?`, u.id);
+    if (ip) await q.run(`UPDATE users SET banned=0 WHERE ip=? AND rank NOT IN ('superadmin','admin')`, ip);
+    await logMod(actor, u, 'unban', 0, '');
+  }
+  io.emit('sync');
   res.json({ ok: true });
 });
 
 app.post('/api/admin/users/:id/mute', requireAdmin, async (req, res) => {
-  await q.run(`UPDATE users SET muted=? WHERE id=?`, req.body.muted ? 1 : 0, req.params.id);
+  const u = await q.get(`SELECT * FROM users WHERE id=?`, req.params.id);
+  if (!u) return res.status(404).json({ error: 'المستخدم غير موجود' });
+  if (u.rank === 'superadmin') return res.status(403).json({ error: 'لا يمكنك كتم سوبر ادمين' });
+  const actor = await q.get(`SELECT id,username FROM users WHERE id=?`, req.session.uid);
+  const m = req.body.muted ? 1 : 0;
+  if (u.ip) await q.run(`UPDATE users SET muted=? WHERE ip=? AND rank NOT IN ('superadmin','admin')`, m, u.ip);
+  else await q.run(`UPDATE users SET muted=? WHERE id=?`, m, u.id);
+  await logMod(actor, u, m ? 'mute' : 'unmute', 0, '');
+  if (m) io.to('user_' + u.id).emit('notify', { icon: 'mic_slash_fill', text: `تم كتمك من قبل الإدارة` });
+  io.emit('sync');
   res.json({ ok: true });
+});
+
+// =====================================================
+//  إجراءات المشرفين من داخل الغرفة (كتم/طرد/حظر بالاي بي)
+// =====================================================
+app.post('/api/mod/mute', requireUser, async (req, res) => {
+  const { target_id, room_id, muted } = req.body;
+  const actor = await q.get(`SELECT * FROM users WHERE id=?`, req.session.uid);
+  const rights = await moderationRights(actor, +room_id);
+  if (!rights.canMute) return res.status(403).json({ error: 'لا تملك صلاحية الكتم' });
+  const target = await q.get(`SELECT * FROM users WHERE id=?`, target_id);
+  if (!target) return res.status(404).json({ error: 'المستخدم غير موجود' });
+  if (target.rank === 'superadmin' || (target.rank === 'admin' && actor.rank !== 'superadmin'))
+    return res.status(403).json({ error: 'لا يمكنك اتخاذ إجراء ضد هذا المستخدم' });
+  const m = muted ? 1 : 0;
+  if (target.ip) await q.run(`UPDATE users SET muted=? WHERE ip=? AND rank NOT IN ('superadmin','admin') AND id!=?`, m, target.ip, actor.id);
+  else await q.run(`UPDATE users SET muted=? WHERE id=?`, m, target.id);
+  await logMod(actor, target, m ? 'mute' : 'unmute', room_id);
+  if (m) io.to('user_' + target.id).emit('notify', { icon: 'mic_slash_fill', text: `تم كتمك من قبل ${actor.username}` });
+  io.emit('sync');
+  res.json({ ok: true });
+});
+
+app.post('/api/mod/kick', requireUser, async (req, res) => {
+  const { target_id, room_id } = req.body;
+  const actor = await q.get(`SELECT * FROM users WHERE id=?`, req.session.uid);
+  const rights = await moderationRights(actor, +room_id);
+  if (!rights.canKick) return res.status(403).json({ error: 'لا تملك صلاحية الطرد' });
+  const target = await q.get(`SELECT * FROM users WHERE id=?`, target_id);
+  if (!target) return res.status(404).json({ error: 'المستخدم غير موجود' });
+  if (target.rank === 'superadmin' || (target.rank === 'admin' && actor.rank !== 'superadmin'))
+    return res.status(403).json({ error: 'لا يمكنك اتخاذ إجراء ضد هذا المستخدم' });
+  await logMod(actor, target, 'kick', room_id);
+  const text = `تم طردك من الغرفة بواسطة ${actor.username}`;
+  if (target.ip) {
+    for (const uid of Object.keys(userSockets)) {
+      const t = await q.get(`SELECT * FROM users WHERE id=?`, uid);
+      if (t && t.ip === target.ip && !['superadmin', 'admin'].includes(t.rank) && t.id !== actor.id) disconnectUser(+uid, 'kicked', { text });
+    }
+  } else disconnectUser(target.id, 'kicked', { text });
+  const set = roomUsers[room_id];
+  if (set) set.delete(target.id);
+  emitRoomUsers(room_id);
+  emitRoomCounts();
+  res.json({ ok: true });
+});
+
+app.post('/api/mod/ban', requireUser, async (req, res) => {
+  const { target_id, room_id, reason } = req.body;
+  const actor = await q.get(`SELECT * FROM users WHERE id=?`, req.session.uid);
+  const rights = await moderationRights(actor, +room_id);
+  if (!rights.canBan) return res.status(403).json({ error: 'لا تملك صلاحية الحظر' });
+  const target = await q.get(`SELECT * FROM users WHERE id=?`, target_id);
+  if (!target) return res.status(404).json({ error: 'المستخدم غير موجود' });
+  if (target.rank === 'superadmin' || (target.rank === 'admin' && actor.rank !== 'superadmin'))
+    return res.status(403).json({ error: 'لا يمكنك اتخاذ إجراء ضد هذا المستخدم' });
+  const ip = target.ip || '';
+  await q.run(`DELETE FROM bans WHERE (ip!='' AND ip=?) OR username=?`, ip, target.username);
+  await q.run(`INSERT INTO bans (username,ip,reason) VALUES (?,?,?)`, target.username, ip, reason || 'حظر من الغرفة');
+  if (ip) await q.run(`UPDATE users SET banned=1 WHERE ip=? AND rank NOT IN ('superadmin','admin') AND id!=?`, ip, actor.id);
+  else await q.run(`UPDATE users SET banned=1 WHERE id=?`, target.id);
+  await logMod(actor, target, 'ban', room_id, reason);
+  const text = `تم حظرك من قبل ${actor.username}`;
+  if (ip) {
+    for (const uid of Object.keys(userSockets)) {
+      const t = await q.get(`SELECT * FROM users WHERE id=?`, uid);
+      if (t && t.ip === ip && !['superadmin', 'admin'].includes(t.rank) && t.id !== actor.id) disconnectUser(+uid, 'banned', { text });
+    }
+  } else disconnectUser(target.id, 'banned', { text });
+  io.emit('sync');
+  res.json({ ok: true });
+});
+
+// ---- ادمن الغرف (تعيين لكل غرفة على حدة مثل الروبوت) ----
+app.get('/api/admin/roomadmins', requireAdmin, async (req, res) => {
+  const rows = await q.all(`
+    SELECT ra.id, ra.user_id, ra.room_id, ra.created_at, u.username, r.name room_name
+    FROM room_admins ra
+    LEFT JOIN users u ON u.id = ra.user_id
+    LEFT JOIN rooms r ON r.id = ra.room_id
+    ORDER BY ra.id DESC`);
+  res.json(rows);
+});
+app.post('/api/admin/roomadmins', requireAdmin, async (req, res) => {
+  const { user_id, room_id } = req.body;
+  if (!user_id || !room_id) return res.status(400).json({ error: 'اختر المستخدم والغرفة' });
+  const u = await q.get(`SELECT * FROM users WHERE id=?`, +user_id);
+  if (!u) return res.status(404).json({ error: 'المستخدم غير موجود' });
+  const r = await q.get(`SELECT id FROM rooms WHERE id=?`, +room_id);
+  if (!r) return res.status(404).json({ error: 'الغرفة غير موجودة' });
+  if (u.rank === 'superadmin' || u.rank === 'admin') return res.status(400).json({ error: 'هذا الحساب ادمن كامل ولا يحتاج تعييناً لغرفة' });
+  await q.run(`INSERT OR IGNORE INTO room_admins (user_id,room_id) VALUES (?,?)`, +user_id, +room_id);
+  if (u.rank === 'user') await q.run(`UPDATE users SET rank='roomadmin' WHERE id=?`, +user_id);
+  await refreshUserEverywhere(+user_id);
+  io.emit('sync');
+  res.json({ ok: true });
+});
+app.delete('/api/admin/roomadmins/:id', requireAdmin, async (req, res) => {
+  const ra = await q.get(`SELECT * FROM room_admins WHERE id=?`, req.params.id);
+  if (!ra) return res.status(404).json({ error: 'غير موجود' });
+  await q.run(`DELETE FROM room_admins WHERE id=?`, req.params.id);
+  const rest = await q.get(`SELECT COUNT(*) c FROM room_admins WHERE user_id=?`, ra.user_id);
+  if (!rest.c) await q.run(`UPDATE users SET rank='user' WHERE id=? AND rank='roomadmin'`, ra.user_id);
+  await refreshUserEverywhere(ra.user_id);
+  io.emit('sync');
+  res.json({ ok: true });
+});
+
+// ---- سجل إجراءات المشرفين (كتم/طرد/حظر) ----
+app.get('/api/admin/modlog', requireAdmin, async (req, res) => {
+  const rows = await q.all(`SELECT * FROM mod_log ORDER BY id DESC LIMIT 200`);
+  res.json(rows);
 });
 
 // ---- الحسابات الإدارية ----
@@ -699,6 +909,15 @@ io.on('connection', async (socket) => {
   const uid = sess.uid;
   let me = await q.get(`SELECT * FROM users WHERE id=?`, uid);
   if (!me) { socket.disconnect(); return; }
+
+  // فحص الحظر (حساب + اي بي) عند الاتصال — الإداريون معفون من حظر الاي بي
+  const myIp = getSocketIp(socket);
+  if (me.banned || (!['superadmin', 'admin'].includes(me.rank) && await isIpBanned(myIp))) {
+    socket.emit('err', 'تم حظر حسابك أو جهازك (الاي بي) من الشات');
+    socket.disconnect(true);
+    return;
+  }
+  if (myIp) await q.run(`UPDATE users SET ip=? WHERE id=?`, myIp, uid);
 
   const mePub = { ...pubUser(me), badge: badgeOf(me) };
   onlineUsers[uid] = mePub;

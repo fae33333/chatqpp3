@@ -132,11 +132,34 @@ db.serialize(() => {
     word TEXT UNIQUE NOT NULL
   )`);
 
-  // ---------- قائمة الحظر ----------
+  // ---------- قائمة الحظر (باسم المستخدم أو بالاي بي) ----------
   db.run(`CREATE TABLE IF NOT EXISTS bans (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     username TEXT,
     ip TEXT DEFAULT '',
+    reason TEXT DEFAULT '',
+    created_at INTEGER DEFAULT (strftime('%s','now'))
+  )`);
+
+  // ---------- ادمن الغرف (تعيين ادمن لكل غرفة على حدة) ----------
+  db.run(`CREATE TABLE IF NOT EXISTS room_admins (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    room_id INTEGER NOT NULL,
+    created_at INTEGER DEFAULT (strftime('%s','now')),
+    UNIQUE(user_id, room_id)
+  )`);
+
+  // ---------- سجل إجراءات المشرفين (كتم/طرد/حظر بالاي بي) ----------
+  db.run(`CREATE TABLE IF NOT EXISTS mod_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor_id INTEGER,
+    actor_name TEXT,
+    target_id INTEGER,
+    target_name TEXT,
+    target_ip TEXT DEFAULT '',
+    action TEXT DEFAULT '',             -- mute | unmute | kick | ban | unban
+    room_id INTEGER DEFAULT 0,
     reason TEXT DEFAULT '',
     created_at INTEGER DEFAULT (strftime('%s','now'))
   )`);
@@ -233,6 +256,15 @@ db.get(`SELECT COUNT(*) c FROM rooms`, (err, row) => {
     rooms.forEach(r => ins.run(...r));
     ins.finalize();
     console.log('✓ تم إنشاء الغرف الافتراضية');
+  }
+});
+
+// ====== تعيين ادمن الغرفة الافتراضي (باسم للغرفة الأولى) ======
+db.get(`SELECT COUNT(*) c FROM room_admins`, (err, row) => {
+  if (row && row.c === 0) {
+    db.run(`INSERT INTO room_admins (user_id, room_id)
+      SELECT u.id, 1 FROM users u WHERE u.username='باسم' AND u.rank='roomadmin'`, () => { });
+    console.log('✓ تم تعيين ادمن الغرفة الافتراضي (باسم → خيمة دردشي)');
   }
 });
 

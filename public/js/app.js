@@ -11,6 +11,16 @@ function savePrefs() { localStorage.setItem('prefs', JSON.stringify(PREFS)); }
 let ROOMS = [], ROOM_COUNTS = {}, CUR_ROOM = null, CUR_TAB = 'default';
 let ROOM_PWD = {};                       // كلمات مرور الغرف الصحيحة لهذه الجلسة (لا تُعاد كتابتها)
 const isAdmRank = () => ME && (ME.rank === 'superadmin' || ME.rank === 'admin');
+// صلاحيات الإشراف للمستخدم الحالي في الغرفة الحالية
+//  سوبر ادمن/ادمن : كتم + طرد + حظر — ادمن الغرفة : كتم + طرد فقط (في غرفه المعيّنة)
+function modRights() {
+  if (!ME) return { mute: false, kick: false, ban: false };
+  if (ME.rank === 'superadmin' || ME.rank === 'admin')
+    return { mute: true, kick: true, ban: true };
+  if (ME.rank === 'roomadmin' && CUR_ROOM && (ME.room_admin_rooms || []).includes(CUR_ROOM.id))
+    return { mute: true, kick: true, ban: false };
+  return { mute: false, kick: false, ban: false };
+}
 let ROOM_USERS = [], CUR_TARGET = null;
 let GIFTS = [], SEL_GIFT = null, G_QTY = 1;
 let UP_PLAN = 'vip', UP_MONTHS = 1, UP_TARGET = null;
@@ -193,10 +203,14 @@ function connectSocket() {
   SOCKET.on('sync', async () => {
     try { SETTINGS = await api('/api/public-settings'); applySettings(); } catch (e) { }
     try { GIFTS = await api('/api/gifts'); } catch (e) { }
+    try { const me2 = await api('/api/me'); if (me2.user) ME = me2.user; } catch (e) { }   // تحديث الصلاحيات/غرف الإشراف
     loadStickers();
     loadRooms();          // تحديث قائمة الغرف واللوحة المضغوطة داخل الغرفة
     if (typeof renderRoomsPanel === 'function') renderRoomsPanel();
   });
+  // طرد/حظر مباشر من مشرف داخل الغرفة
+  SOCKET.on('kicked', (p) => { toast(p.text || 'تم طردك من الغرفة', false); if (CUR_ROOM) { leaveRoom(); showScreen('rooms'); } });
+  SOCKET.on('banned', (p) => { toast(p.text || 'تم حظرك من الشات', false); if (CUR_ROOM) { leaveRoom(); showScreen('rooms'); } });
   SOCKET.on('announce', (a) => {
     pushNotif('bolt_badge_a_fill', '📢 ' + a.text);
     showAnnounce(a.text);
@@ -437,6 +451,13 @@ function openUserSheet(uid, msg) {
   US_MSG = msg || null;
   $('#usName').textContent = u.username;
   $('#usReply').style.display = US_MSG ? '' : 'none';
+  // إظهار أزرار الإشراف حسب صلاحيتي (ولا تظهر ضد الإداريين)
+  const r = modRights();
+  const canModTarget = !u || (u.rank !== 'superadmin' && !(u.rank === 'admin' && ME.rank !== 'superadmin'));
+  $('#usModGroup').style.display = (canModTarget && (r.mute || r.kick || r.ban)) ? '' : 'none';
+  $('#usModMute').style.display = (canModTarget && r.mute) ? '' : 'none';
+  $('#usModKick').style.display = (canModTarget && r.kick) ? '' : 'none';
+  $('#usModBan').style.display = (canModTarget && r.ban) ? '' : 'none';
   openOv('userSheet');
 }
 // الرد على الرسالة: شريط وردي فوق حقل الكتابة (الاسم + اقتباس + زر إلغاء)
@@ -451,9 +472,23 @@ $('#usReply').onclick = () => { closeOv('userSheet'); if (US_MSG) setReply(US_MS
 $('#usPrivate').onclick = () => { closeOv('userSheet'); if (!ME.registered) return openOv('needRegOv'); openPrivateWith(CUR_TARGET); };
 $('#usGift').onclick = () => { closeOv('userSheet'); if (!ME.registered) return openOv('needRegOv'); openGifts(CUR_TARGET); };
 $('#usUpgrade').onclick = () => { closeOv('userSheet'); if (!ME.registered) return openOv('needRegOv'); openUpgrade(CUR_TARGET); };
-$('#usBan').onclick = async () => {
+$('#usModMute').onclick = async () => {
+  const t = CUR_TARGET; closeOv('userSheet');
+  try { await api('/api/mod/mute', 'POST', { target_id: t.id, room_id: CUR_ROOM ? CUR_ROOM.id : 0, muted: 1 }); toast('تم كتم ' + t.username + ' (بالاي بي) 🔇'); }
+  catch (e) { toast(e.error || 'لا تملك صلاحية الكتم', false); }
+};
+$('#usModKick').onclick = async () => {
+  const t = CUR_TARGET;
+  if (!confirm('هل تريد طرد ' + t.username + ' من الغرفة؟')) return;
   closeOv('userSheet');
-  try { await api(`/api/admin/users/${CUR_TARGET.id}/ban`, 'POST', { banned: true, reason: 'حظر من الغرفة' }); toast('تم حظر ' + CUR_TARGET.username); }
+  try { await api('/api/mod/kick', 'POST', { target_id: t.id, room_id: CUR_ROOM ? CUR_ROOM.id : 0 }); toast('تم طرد ' + t.username + ' (بالاي بي) 🚪'); }
+  catch (e) { toast(e.error || 'لا تملك صلاحية الطرد', false); }
+};
+$('#usModBan').onclick = async () => {
+  const t = CUR_TARGET;
+  if (!confirm('سيتم حظر ' + t.username + ' وجهازه (الاي بي) نهائياً، هل أنت متأكد؟')) return;
+  closeOv('userSheet');
+  try { await api('/api/mod/ban', 'POST', { target_id: t.id, room_id: CUR_ROOM ? CUR_ROOM.id : 0, reason: 'حظر من الغرفة' }); toast('تم حظر ' + t.username + ' (بالاي بي) ⛔'); }
   catch (e) { toast(e.error || 'لا تملك صلاحية الحظر', false); }
 };
 $('#usReport').onclick = async () => {
