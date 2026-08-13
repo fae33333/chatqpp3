@@ -35,6 +35,7 @@ fs.mkdirSync(path.join(__dirname, 'public/uploads'), { recursive: true });
 fs.mkdirSync(path.join(__dirname, 'public/uploads/gifts'), { recursive: true });
 fs.mkdirSync(path.join(__dirname, 'public/uploads/stickers'), { recursive: true });
 fs.mkdirSync(path.join(__dirname, 'public/uploads/rooms'), { recursive: true });
+fs.mkdirSync(path.join(__dirname, 'public/uploads/statuses'), { recursive: true });
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, path.join(__dirname, 'public/uploads')),
   filename: (req, file, cb) => {
@@ -52,6 +53,13 @@ const storageMedia = multer.diskStorage({
   filename: (req, file, cb) => cb(null, Date.now() + '_' + Math.random().toString(36).slice(2, 8) + path.extname(file.originalname).toLowerCase())
 });
 const uploadMedia = multer({ storage: storageMedia, limits: { fileSize: 8 * 1024 * 1024 } });
+
+// رفع ملفات الحالات (صورة/فيديو)
+const storageStatus = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, path.join(__dirname, 'public/uploads/statuses')),
+  filename: (req, file, cb) => cb(null, Date.now() + '_' + Math.random().toString(36).slice(2, 8) + path.extname(file.originalname).toLowerCase())
+});
+const uploadStatus = multer({ storage: storageStatus, limits: { fileSize: 30 * 1024 * 1024 } });
 
 // ====== أدوات مساعدة ======
 const q = {
@@ -788,6 +796,94 @@ app.post('/api/mod/ban', requireUser, async (req, res) => {
   res.json({ ok: true });
 });
 
+// =====================================================
+//  الحالات (ستوري: نص / صورة / فيديو) + المشاهدات
+// =====================================================
+const STATUS_TTL = 24 * 3600;   // تنتهي الحالة بعد 24 ساعة
+
+app.post('/api/statuses', requireUser, (req, res) => {
+  uploadStatus.single('file')(req, res, async (err) => {
+    if (err) return res.status(500).json({ error: 'تعذر الرفع: ' + err.message });
+    try {
+      const me = await q.get(`SELECT * FROM users WHERE id=?`, req.session.uid);
+      let type = 'text', content = '';
+      if (req.file) {
+        const ext = path.extname(req.file.filename).toLowerCase();
+        type = ['.mp4', '.webm', '.ogg', '.mov', '.mkv', '.avi'].includes(ext) ? 'video' : 'image';
+        content = '/uploads/statuses/' + req.file.filename;
+      } else {
+        content = String((req.body && req.body.text) || '').trim().slice(0, 500);
+        if (!content) return res.status(400).json({ error: 'اكتب نص الحالة أو ارفع صورة/فيديو' });
+      }
+      const now = Math.floor(Date.now() / 1000);
+      const r = await q.run(`INSERT INTO statuses (user_id,username,type,content,expires_at) VALUES (?,?,?,?,?)`,
+        me.id, me.username, type, content, now + STATUS_TTL);
+      io.emit('sync');
+      res.json({ ok: true, id: r.lastID });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+});
+
+app.get('/api/statuses', requireUser, async (req, res) => {
+  const now = Math.floor(Date.now() / 1000);
+  const rows = await q.all(`
+    SELECT s.*, u.avatar, u.rank, u.membership, u.gender
+    FROM statuses s JOIN users u ON u.id = s.user_id
+    WHERE s.expires_at > ? ORDER BY s.id DESC`, now);
+  const mine = [], others = [];
+  for (const s of rows) {
+    const vc = await q.get(`SELECT COUNT(*) c FROM status_views WHERE status_id=?`, s.id);
+    const viewed = await q.get(`SELECT id FROM status_views WHERE status_id=? AND viewer_id=?`, s.id, req.session.uid);
+    const item = {
+      id: s.id, user_id: s.user_id, username: s.username, type: s.type, content: s.content,
+      created_at: s.created_at, expires_at: s.expires_at, avatar: s.avatar,
+      rank: s.rank, membership: s.membership, gender: s.gender,
+      viewer_count: vc.c, viewed: !!viewed
+    };
+    if (s.user_id === req.session.uid) mine.push(item); else others.push(item);
+  }
+  res.json({ mine, others });
+});
+
+app.get('/api/user/:id/statuses', requireUser, async (req, res) => {
+  const now = Math.floor(Date.now() / 1000);
+  const rows = await q.all(`SELECT * FROM statuses WHERE user_id=? AND expires_at>? ORDER BY id DESC`, req.params.id, now);
+  const out = [];
+  for (const s of rows) {
+    const vc = await q.get(`SELECT COUNT(*) c FROM status_views WHERE status_id=?`, s.id);
+    out.push({ ...s, viewer_count: vc.c });
+  }
+  res.json(out);
+});
+
+app.post('/api/statuses/:id/view', requireUser, async (req, res) => {
+  const s = await q.get(`SELECT * FROM statuses WHERE id=?`, req.params.id);
+  if (!s) return res.status(404).json({ error: 'الحالة غير موجودة' });
+  const me = await q.get(`SELECT username FROM users WHERE id=?`, req.session.uid);
+  await q.run(`INSERT OR IGNORE INTO status_views (status_id,viewer_id,viewer_name) VALUES (?,?,?)`, s.id, req.session.uid, me.username);
+  res.json({ ok: true });
+});
+
+app.get('/api/statuses/:id/views', requireUser, async (req, res) => {
+  const s = await q.get(`SELECT * FROM statuses WHERE id=?`, req.params.id);
+  if (!s) return res.status(404).json({ error: 'الحالة غير موجودة' });
+  if (s.user_id !== req.session.uid && !['superadmin', 'admin'].includes(req.session.rank))
+    return res.status(403).json({ error: 'يمكن لصاحب الحالة فقط رؤية المشاهدات' });
+  const rows = await q.all(`SELECT v.*, u.avatar FROM status_views v LEFT JOIN users u ON u.id = v.viewer_id WHERE v.status_id=? ORDER BY v.id DESC`, s.id);
+  res.json(rows);
+});
+
+app.delete('/api/statuses/:id', requireUser, async (req, res) => {
+  const s = await q.get(`SELECT * FROM statuses WHERE id=?`, req.params.id);
+  if (!s) return res.status(404).json({ error: 'الحالة غير موجودة' });
+  if (s.user_id !== req.session.uid && !['superadmin', 'admin'].includes(req.session.rank))
+    return res.status(403).json({ error: 'لا تملك حذف هذه الحالة' });
+  await q.run(`DELETE FROM status_views WHERE status_id=?`, s.id);
+  await q.run(`DELETE FROM statuses WHERE id=?`, s.id);
+  io.emit('sync');
+  res.json({ ok: true });
+});
+
 // ---- ادمن الغرف (تعيين لكل غرفة على حدة مثل الروبوت) ----
 app.get('/api/admin/roomadmins', requireAdmin, async (req, res) => {
   const rows = await q.all(`
@@ -827,6 +923,56 @@ app.delete('/api/admin/roomadmins/:id', requireAdmin, async (req, res) => {
 app.get('/api/admin/modlog', requireAdmin, async (req, res) => {
   const rows = await q.all(`SELECT * FROM mod_log ORDER BY id DESC LIMIT 200`);
   res.json(rows);
+});
+
+// التراجع عن إجراء من السجل (حسب نوع الإجراء)
+app.post('/api/admin/modlog/:id/undo', requireAdmin, async (req, res) => {
+  const log = await q.get(`SELECT * FROM mod_log WHERE id=?`, req.params.id);
+  if (!log) return res.status(404).json({ error: 'السجل غير موجود' });
+  const actor = await q.get(`SELECT id,username FROM users WHERE id=?`, req.session.uid);
+  const target = await q.get(`SELECT * FROM users WHERE id=?`, log.target_id);
+  if (!target) return res.status(404).json({ error: 'المستخدم المستهدف غير موجود' });
+  const ip = target.ip || log.target_ip || '';
+  let msg = '';
+  if (log.action === 'mute') {
+    // إلغاء الكتم
+    if (ip) await q.run(`UPDATE users SET muted=0 WHERE ip=? AND rank NOT IN ('superadmin','admin')`, ip);
+    await q.run(`UPDATE users SET muted=0 WHERE id=?`, target.id);
+    await logMod(actor, target, 'unmute', log.room_id, 'تراجع من السجل');
+    msg = 'تم إلغاء الكتم عن ' + target.username;
+  } else if (log.action === 'unmute') {
+    // كتم مجدداً
+    if (ip) await q.run(`UPDATE users SET muted=1 WHERE ip=? AND rank NOT IN ('superadmin','admin')`, ip);
+    else await q.run(`UPDATE users SET muted=1 WHERE id=?`, target.id);
+    await logMod(actor, target, 'mute', log.room_id, 'تراجع من السجل');
+    msg = 'تم كتم ' + target.username + ' مجدداً';
+  } else if (log.action === 'ban') {
+    // إلغاء الحظر
+    await q.run(`DELETE FROM bans WHERE username=? OR (ip!='' AND ip=?)`, target.username, ip);
+    if (ip) await q.run(`UPDATE users SET banned=0 WHERE ip=?`, ip);
+    await q.run(`UPDATE users SET banned=0 WHERE id=?`, target.id);
+    await logMod(actor, target, 'unban', log.room_id, 'تراجع من السجل');
+    msg = 'تم إلغاء الحظر عن ' + target.username;
+  } else if (log.action === 'unban') {
+    // حظر مجدداً
+    await q.run(`INSERT INTO bans (username,ip,reason) VALUES (?,?,?)`, target.username, ip, 'إعادة حظر من السجل');
+    if (ip) await q.run(`UPDATE users SET banned=1 WHERE ip=? AND rank NOT IN ('superadmin','admin')`, ip);
+    else await q.run(`UPDATE users SET banned=1 WHERE id=?`, target.id);
+    await logMod(actor, target, 'ban', log.room_id, 'تراجع من السجل');
+    msg = 'تم حظر ' + target.username + ' مجدداً';
+  } else if (log.action === 'kick') {
+    // إلغاء الطرد = السماح بالعودة (فك الكتم والحظر معاً)
+    await q.run(`DELETE FROM bans WHERE username=? OR (ip!='' AND ip=?)`, target.username, ip);
+    if (ip) await q.run(`UPDATE users SET banned=0, muted=0 WHERE ip=?`, ip);
+    await q.run(`UPDATE users SET banned=0, muted=0 WHERE id=?`, target.id);
+    await logMod(actor, target, 'unban', log.room_id, 'تراجع عن الطرد');
+    msg = 'تم إلغاء الطرد عن ' + target.username + ' — يمكنه العودة للغرفة';
+  } else {
+    return res.status(400).json({ error: 'لا يمكن التراجع عن هذا الإجراء' });
+  }
+  await refreshUserEverywhere(target.id);
+  io.emit('sync');
+  res.json({ ok: true, msg });
 });
 
 // ---- الحسابات الإدارية ----

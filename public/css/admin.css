@@ -253,3 +253,18 @@ select.inp { cursor:pointer; }
 ::-webkit-scrollbar-thumb { background:#b6bbd6; border-radius:6px; }
 ::-webkit-scrollbar-track { background:transparent; }
 .sidebar::-webkit-scrollbar-thumb { background:#3a4080; }
+
+/* سجل اجراءات المشرفين */
+.mod-card { display:flex; align-items:center; gap:14px; padding:14px 16px; }
+.mod-ic { width:46px; height:46px; border-radius:14px; display:flex; align-items:center; justify-content:center; font-size:22px; flex:0 0 auto; }
+.mod-mid { flex:1; min-width:0; }
+.mod-title { display:flex; align-items:center; gap:8px; font-size:14px; color:#111827; }
+.mod-title b { font-weight:800; }
+.mod-sep { flex:1; height:1px; background:#eef0f7; }
+.mod-date { font-size:11px; color:#9aa0b5; font-weight:700; white-space:nowrap; }
+.mod-sub { display:flex; align-items:center; flex-wrap:wrap; gap:4px; margin-top:7px; font-size:12.5px; color:#6b7280; font-weight:700; }
+.mod-who { font-weight:800; color:#374151; }
+.mod-who.t { color:#7c3aed; }
+.mod-arr { font-size:13px; color:#c3c8d8; }
+.undo-mod { font-size:12.5px; padding:9px 14px; }
+.undo-mod:disabled { opacity:.5; pointer-events:none; }

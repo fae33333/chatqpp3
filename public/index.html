@@ -52,6 +52,7 @@
         <button class="c-mic" id="micPill"><i class="f7-icons">mic_fill</i><span class="live-dot"></span></button>
       </span>
       <span class="c-top-btns">
+        <button class="cbtn" id="btnAddStatus"><i class="f7-icons">plus_circle_fill</i></button>
         <button class="cbtn" id="btnHome"><i class="f7-icons">house_fill</i></button>
         <button class="cbtn" id="btnRoomUsers"><i class="f7-icons">person3_fill</i></button>
         <button class="cbtn ghost" id="btnRoomMore"><i class="f7-icons">ellipsis_vertical</i></button>
@@ -256,6 +257,7 @@
       <div class="usheet-name" id="usName">-</div>
       <button class="us-opt" id="usReply"><i class="f7-icons">arrowshape_turn_up_left_fill</i> الرد على الرسالة</button>
       <button class="us-opt" id="usPrivate"><i class="f7-icons">chat_bubble_text_fill</i> دردشة خاصة</button>
+      <button class="us-opt" id="usViewStatus" style="display:none"><i class="f7-icons">sparkles</i> مشاهدة الحالة</button>
       <button class="us-opt" id="usGift"><i class="f7-icons">gift_fill</i> أرسل هدية</button>
       <button class="us-opt" id="usUpgrade"><i class="f7-icons">chart_bar_fill</i> تجديد ترقية المستخدم</button>
       <div class="us-mod" id="usModGroup" style="display:none">
@@ -267,6 +269,60 @@
       <button class="us-opt" id="usReport"><i class="f7-icons">exclamationmark_shield_fill</i> الإبلاغ عن المستخدم</button>
       <button class="us-opt" id="usProfile"><i class="f7-icons">person_crop_circle</i> عرض الملف الشخصي</button>
       <button class="us-cancel" data-close="userSheet">الغاء</button>
+    </div>
+  </div>
+
+  <!-- إضافة الحالة (نص / صورة / فيديو) -->
+  <div class="overlay full" id="statusAddOv">
+    <div class="pvpage">
+      <div class="pg-head bar">
+        <span class="pg-title">حالتي</span>
+        <span class="pg-close back" data-close="statusAddOv"><i class="f7-icons">chevron_left</i> عودة</span>
+      </div>
+      <div class="st-add">
+        <textarea id="stText" rows="3" placeholder="اكتب حالة نصية..."></textarea>
+        <div class="st-actions">
+          <button class="st-act" id="stImgBtn"><i class="f7-icons">photo_fill</i> صورة</button>
+          <button class="st-act" id="stVidBtn"><i class="f7-icons">videocam_fill</i> فيديو</button>
+          <button class="st-pub" id="stPublish"><i class="f7-icons">paperplane_fill</i> نشر</button>
+          <input type="file" id="stImgFile" accept="image/*" style="display:none">
+          <input type="file" id="stVidFile" accept="video/*" style="display:none">
+        </div>
+        <div class="st-hint" id="stHint" style="display:none"></div>
+      </div>
+      <div class="mn-title" style="padding:2px 4px 8px">حالاتي الحالية</div>
+      <div id="stMineList"></div>
+    </div>
+  </div>
+
+  <!-- مشاهدة الحالة -->
+  <div class="overlay full" id="statusViewOv">
+    <div class="st-view">
+      <div class="st-vtop">
+        <span class="st-vuser">
+          <span class="st-vava" id="stVAva"></span>
+          <span class="st-vmeta"><b id="stVName">-</b><span id="stVTime"></span></span>
+        </span>
+        <span class="st-vclose" data-close="statusViewOv"><i class="f7-icons">xmark</i></span>
+      </div>
+      <div class="st-vbody" id="stVBody"></div>
+      <div class="st-vfoot">
+        <span id="stVCount"></span>
+        <span class="st-nav" id="stVViews" style="display:none" title="من شاهد حالتي"><i class="f7-icons">eye_fill</i></span>
+        <span class="st-nav" id="stVPrev"><i class="f7-icons">chevron_left</i></span>
+        <span class="st-nav" id="stVNext"><i class="f7-icons">chevron_right</i></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- من شاهد حالتي -->
+  <div class="overlay full" id="statusViewsOv">
+    <div class="pvpage">
+      <div class="pg-head bar">
+        <span class="pg-close back" data-close="statusViewsOv"><i class="f7-icons">chevron_left</i> عودة</span>
+        <span class="pg-title">من شاهد حالتي</span>
+      </div>
+      <div class="pv-list" id="statusViewsList"></div>
     </div>
   </div>
 

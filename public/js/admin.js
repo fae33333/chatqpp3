@@ -757,24 +757,22 @@ const PAGES = {
       <div class="page-title"><i class="f7-icons mi" style="color:#818cf8">clock_fill</i> سجل اجراءات المشرفين</div>
       <div class="info-box" style="display:flex;align-items:center;gap:10px;background:#f5f3ff;border-color:#ddd6fe">
         <i class="f7-icons" style="color:#7c3aed">info_circle_fill</i>
-        <span style="color:#5b21b6;font-weight:700">كل عمليات الكتم والطرد والحظر (مع الاي بي) من داخل الغرف ومن لوحة التحكم</span>
+        <span style="color:#5b21b6;font-weight:700">كل عمليات الكتم والطرد والحظر (مع الاي بي) — زر «إلغاء» حسب نوع الإجراء للتراجع عنه</span>
       </div>
       <div id="modlogList"><div class="loading"><i class="f7-icons">arrow2_circlepath</i>جاري التحميل...</div></div>`,
     bind: async () => {
-      const list = await api('/api/admin/modlog');
-      const actMap = { mute: '🔇 كتم', unmute: '🔊 فك الكتم', kick: '🚪 طرد', ban: '⛔ حظر', unban: '✅ فك الحظر' };
-      $('#modlogList').innerHTML = list.length ? list.map(l => `
-        <div class="list-card">
-          <div style="display:flex;align-items:center;gap:10px;min-width:0">
-            <span style="width:40px;height:40px;border-radius:12px;background:#eef2ff;display:flex;align-items:center;justify-content:center;font-size:19px">${actMap[l.action] ? actMap[l.action].split(' ')[0] : '📋'}</span>
-            <div style="min-width:0;flex:1">
-              <b style="font-size:13.5px;color:#2c3154">${actMap[l.action] || esc(l.action)}</b>
-              <div style="font-size:12px;color:#6b7280;font-weight:700">${esc(l.actor_name)} ← ${esc(l.target_name)}</div>
-              ${l.target_ip ? `<span class="chip" dir="ltr" style="color:#4338ca">🌐 ${esc(l.target_ip)}</span>` : ''}
-            </div>
-            <div style="font-size:11px;color:#9aa0b5;font-weight:700;white-space:nowrap">${new Date(l.created_at * 1000).toLocaleString('ar')}</div>
-          </div>
-        </div>`).join('') : '<div class="empty">لا توجد إجراءات بعد</div>';
+      const render = async () => {
+        const list = await api('/api/admin/modlog');
+        $('#modlogList').innerHTML = list.length ? list.map(modlogCard).join('') : '<div class="empty">لا توجد إجراءات بعد</div>';
+        $$('#modlogList .undo-mod').forEach(b => b.onclick = async () => {
+          b.disabled = true;
+          try { const d = await api('/api/admin/modlog/' + b.dataset.id + '/undo', 'POST'); toast(d.msg || 'تم التراجع'); }
+          catch (e) { toast(e.error || 'تعذر التراجع', false); }
+          render();
+        });
+      };
+      await render();
+      window._renderModlog = render;
     }
   },
 
@@ -1058,6 +1056,39 @@ window.clearRoomForm = () => { editingRoom = null; loadPage('roomAdd'); };
 window.editWord = (id, w) => { editingWord = id; $('#newWord').value = w; $('#newWord').focus(); toast('عدّل الكلمة ثم اضغط اضافة'); };
 window.delWord = async (id) => { await api('/api/admin/words/' + id, 'DELETE'); toast('تم حذف الكلمة'); await renderWords(); };
 window.delVerified = async (id) => { await api('/api/admin/verified/' + id, 'DELETE'); toast('تم إزالة العضو من التوثيق'); await renderVerified(); };
+
+// بطاقة سجل اجراءات المشرفين (مع زر إلغاء حسب نوع الإجراء)
+const MOD_ACT = {
+  mute:   { icon: 'mic_slash_fill', color: '#b45309', bg: '#fef3c7', label: 'كتم المستخدم', undo: 'إلغاء الكتم' },
+  unmute: { icon: 'mic_fill',       color: '#047857', bg: '#d1fae5', label: 'فك الكتم',      undo: 'كتم مجدداً' },
+  kick:   { icon: 'person_crop_circle_badge_xmark', color: '#b91c1c', bg: '#fee2e2', label: 'طرد المستخدم', undo: 'إلغاء الطرد' },
+  ban:    { icon: 'nosign',         color: '#b91c1c', bg: '#fee2e2', label: 'حظر المستخدم', undo: 'إلغاء الحظر' },
+  unban:  { icon: 'checkmark_circle_fill', color: '#047857', bg: '#d1fae5', label: 'فك الحظر', undo: 'حظر مجدداً' }
+};
+function modlogCard(l) {
+  const a = MOD_ACT[l.action] || { icon: 'clock_fill', color: '#6b7280', bg: '#eef2ff', label: esc(l.action), undo: 'إلغاء' };
+  const dt = new Date(l.created_at * 1000);
+  return `
+    <div class="list-card mod-card">
+      <span class="mod-ic" style="background:${a.bg};color:${a.color}"><i class="f7-icons">${a.icon}</i></span>
+      <div class="mod-mid">
+        <div class="mod-title"><b>${a.label}</b><span class="mod-sep"></span><span class="mod-date">${dt.toLocaleDateString('ar')} ${dt.toLocaleTimeString('ar', { hour: '2-digit', minute: '2-digit' })}</span></div>
+        <div class="mod-sub">
+          <span class="mod-who">${esc(l.actor_name || '—')}</span>
+          <i class="f7-icons mod-arr">arrow_right</i>
+          <span class="mod-who t">${esc(l.target_name || '—')}</span>
+          ${l.target_ip ? `<span class="chip" dir="ltr" style="color:#4338ca;margin-inline-start:4px">🌐 ${esc(l.target_ip)}</span>` : ''}
+          ${l.reason ? `<span class="chip" style="color:#92400e">سبب: ${esc(l.reason)}</span>` : ''}
+        </div>
+      </div>
+      <button class="btn btn-sm undo-mod" data-id="${l.id}" style="background:${a.bg};color:${a.color};box-shadow:none;flex:0 0 auto"><i class="f7-icons">arrow_uturn_left</i> ${a.undo}</button>
+    </div>`;
+}
+window.undoMod = async (id) => {
+  try { const d = await api('/api/admin/modlog/' + id + '/undo', 'POST'); toast(d.msg || 'تم التراجع'); }
+  catch (e) { toast(e.error || 'تعذر التراجع', false); }
+  if (window._renderModlog) window._renderModlog();
+};
 
 async function renderWords() {
   const words = await api('/api/admin/words');

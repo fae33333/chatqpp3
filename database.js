@@ -190,6 +190,27 @@ db.serialize(() => {
     message TEXT,
     created_at INTEGER DEFAULT (strftime('%s','now'))
   )`);
+
+  // ---------- الحالات (ستوري: نص / صورة / فيديو) ----------
+  db.run(`CREATE TABLE IF NOT EXISTS statuses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    username TEXT NOT NULL,
+    type TEXT DEFAULT 'text',            -- text | image | video
+    content TEXT NOT NULL,                -- نص الحالة أو مسار الملف
+    created_at INTEGER DEFAULT (strftime('%s','now')),
+    expires_at INTEGER DEFAULT 0
+  )`);
+
+  // ---------- مشاهدي الحالات ----------
+  db.run(`CREATE TABLE IF NOT EXISTS status_views (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    status_id INTEGER NOT NULL,
+    viewer_id INTEGER NOT NULL,
+    viewer_name TEXT NOT NULL,
+    created_at INTEGER DEFAULT (strftime('%s','now')),
+    UNIQUE(status_id, viewer_id)
+  )`);
 });
 
 // ====== الإعدادات الافتراضية ======
