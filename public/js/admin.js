@@ -38,14 +38,16 @@ const MENU = [
   { icon: 'house_fill', color: '#fb923c', label: 'اعدادات الغرف', subs: [
     { id: 'rooms', icon: 'list_bullet', label: 'قائمة الغرف' },
     { id: 'roomAdd', icon: 'plus_square_fill', label: 'اضافة غرفة' },
-    { id: 'bots', icon: 'wand_stars', label: 'رسائل الروبوت' }]},
+    { id: 'bots', icon: 'wand_stars', label: 'رسائل الروبوت' },
+    { id: 'roomAdmins', icon: 'person2_fill', label: 'ادمن الغرف' }]},
   { icon: 'desktopcomputer', color: '#38bdf8', label: 'اعدادات النظام', subs: [
     { id: 'system', icon: 'wrench_fill', label: 'اعدادات النظام الاساسي' }]},
   { icon: 'person2_fill', color: '#818cf8', label: 'ادارة المستخدمين', subs: [
     { id: 'userAdd', icon: 'plus_circle_fill', label: 'اضافه مستخدم' },
     { id: 'userEdit', icon: 'pencil_circle_fill', label: 'تحرير مستخدم' },
     { id: 'admins', icon: 'rosette', label: 'الحسابات الادارية' },
-    { id: 'bans', icon: 'slash_circle_fill', label: 'قائمة الحظر' }]},
+    { id: 'bans', icon: 'slash_circle_fill', label: 'قائمة الحظر' },
+    { id: 'modlog', icon: 'clock_fill', label: 'سجل اجراءات المشرفين' }]},
   { icon: 'gear_alt_fill', color: '#94a3b8', label: 'نظام الادارة', subs: [
     { id: 'broadcast', icon: 'bolt_badge_a_fill', label: 'ارسال اعلان للجميع' },
     { id: 'words', icon: 'search', label: 'فلترة الكلمات' },
@@ -621,6 +623,7 @@ const PAGES = {
                   <span class="chip">رصيد: ${u.balance}</span>
                   ${u.banned ? '<span class="chip" style="color:#dc2626">محظور</span>' : ''}
                   ${u.muted ? '<span class="chip" style="color:#d97706">مكتوم</span>' : ''}
+                  ${u.ip ? `<span class="chip" dir="ltr" style="color:#4338ca">🌐 ${esc(u.ip)}</span>` : ''}
                 </div>
               </div>
             </div>
@@ -668,14 +671,108 @@ const PAGES = {
   bans: {
     build: () => `
       <div class="page-title"><i class="f7-icons mi" style="color:#dc2626">slash_circle_fill</i> قائمة الحظر</div>
+      <div class="info-box" style="display:flex;align-items:center;gap:10px;background:#fef2f2;border-color:#fecaca">
+        <i class="f7-icons" style="color:#dc2626">info_circle_fill</i>
+        <span style="color:#991b1b;font-weight:700">الحظر يتم عبر الاي بي — أي حساب جديد من نفس الجهاز سيبقى محظوراً</span>
+      </div>
       <div id="bansList"><div class="loading"><i class="f7-icons">arrow2_circlepath</i>جاري التحميل...</div></div>`,
     bind: async () => {
       const list = await api('/api/admin/bans');
       $('#bansList').innerHTML = list.length ? list.map(b => `
         <div class="list-card word-card">
-          <span class="word-name"><i class="f7-icons">nosign</i> ${esc(b.username)} <span class="chip">${esc(b.reason || 'بدون سبب')}</span></span>
+          <span class="word-name"><i class="f7-icons">nosign</i> ${esc(b.username)}
+            <span class="chip">${esc(b.reason || 'بدون سبب')}</span>
+            ${b.ip ? `<span class="chip" dir="ltr" style="color:#4338ca">🌐 ${esc(b.ip)}</span>` : ''}</span>
           <button class="btn btn-red btn-sm" onclick="unban(${b.id})"><i class="f7-icons">trash_fill</i> إزالة الحظر</button>
         </div>`).join('') : '<div class="empty">✅ قائمة الحظر فارغة</div>';
+    }
+  },
+
+  // ====== ادمن الغرف (تعيين لكل غرفة على حدة) ======
+  roomAdmins: {
+    build: () => `
+      <div class="page-title"><i class="f7-icons mi" style="color:#fb923c">person2_fill</i> ادمن الغرف</div>
+      <div class="info-box" style="display:flex;align-items:center;gap:10px;background:#eff6ff;border-color:#bfdbfe">
+        <i class="f7-icons" style="color:#2563eb">lightbulb_fill</i>
+        <span style="color:#1e40af;font-weight:700">عيّن ادمن غرفة لكل غرفة على حدة (مثل الروبوت) — مثلاً أحمد للغرفة الأولى وصالح للغرفة الثانية</span>
+      </div>
+      <div class="section-title"><i class="f7-icons mi" style="color:#7c3aed">plus_circle_fill</i> تعيين ادمن غرفة جديد</div>
+      <div style="background:#fff;border:1px solid #e7eaf5;border-radius:14px;padding:16px;margin-bottom:22px">
+        <div class="inp-row"><label>الغرفة</label>
+          <select class="inp" id="raRoom"><option value="">اختر الغرفة...</option></select></div>
+        <div class="inp-row"><label>المستخدم (اكتب جزءاً من الاسم ثم ابحث)</label>
+          <div style="display:flex;gap:10px">
+            <input class="inp" id="raSearch" placeholder="🔍 ابحث عن مستخدم...">
+            <button class="btn btn-purple btn-sm" id="raSearchBtn"><i class="f7-icons">search</i> بحث</button>
+          </div>
+          <select class="inp" id="raUser" style="margin-top:8px"><option value="">اختر المستخدم...</option></select>
+        </div>
+        <div class="btn-row" style="justify-content:flex-start">
+          <button class="btn btn-green" id="raSave"><i class="f7-icons">checkmark_circle_fill</i> تعيين ادمن الغرفة</button>
+        </div>
+      </div>
+      <div class="section-title"><i class="f7-icons mi" style="color:#94a3b8">list_bullet</i> التعيينات الحالية</div>
+      <div id="raList" style="display:grid;gap:8px"></div>`,
+    bind: async () => {
+      const rooms = await api('/api/admin/rooms');
+      $('#raRoom').innerHTML = '<option value="">اختر الغرفة...</option>' + rooms.map(r => `<option value="${r.id}">${esc(r.name)}</option>`).join('');
+      const renderList = async () => {
+        const list = await api('/api/admin/roomadmins');
+        $('#raList').innerHTML = list.length ? list.map(a => `
+          <div class="list-card">
+            <div style="display:flex;align-items:center;gap:10px;min-width:0">
+              <span style="width:40px;height:40px;border-radius:12px;background:#fdf2fa;display:flex;align-items:center;justify-content:center;font-size:20px">👤</span>
+              <div style="min-width:0">
+                <b style="font-size:13.5px;color:#2c3154">${esc(a.username || '—')}</b>
+                <div style="font-size:11.5px;color:#98a0b3;font-weight:700">غرفة: ${esc(a.room_name || a.room_id)}</div>
+              </div>
+            </div>
+            <button class="btn btn-red btn-sm" onclick="delRoomAdmin(${a.id})"><i class="f7-icons">trash_fill</i> إزالة</button>
+          </div>`).join('') : '<div class="empty">لا توجد تعيينات بعد</div>';
+      };
+      await renderList();
+      const searchUsers = async (q) => {
+        const users = await api('/api/admin/users?q=' + encodeURIComponent(q || ''));
+        $('#raUser').innerHTML = '<option value="">اختر المستخدم...</option>' + users.slice(0, 50).map(u => `<option value="${u.id}">${esc(u.username)}${u.rank !== 'user' ? ' (' + (u.rank === 'roomadmin' ? 'ادمن غرفة' : u.rank === 'admin' ? 'ادمن' : 'سوبر ادمين') + ')' : ''}</option>`).join('');
+      };
+      await searchUsers('');
+      $('#raSearchBtn').onclick = () => searchUsers($('#raSearch').value);
+      $('#raSearch').onkeydown = e => { if (e.key === 'Enter') searchUsers($('#raSearch').value); };
+      $('#raSave').onclick = async () => {
+        const room_id = +$('#raRoom').value, user_id = +$('#raUser').value;
+        if (!room_id) return toast('اختر الغرفة', false);
+        if (!user_id) return toast('اختر المستخدم', false);
+        try {
+          await api('/api/admin/roomadmins', 'POST', { user_id, room_id });
+          toast('تم تعيين ادمن الغرفة بنجاح 👑');
+          renderList();
+        } catch (e) { toast(e.error || 'تعذر التعيين', false); }
+      };
+    }
+  },
+
+  // ====== سجل اجراءات المشرفين ======
+  modlog: {
+    build: () => `
+      <div class="page-title"><i class="f7-icons mi" style="color:#818cf8">clock_fill</i> سجل اجراءات المشرفين</div>
+      <div class="info-box" style="display:flex;align-items:center;gap:10px;background:#f5f3ff;border-color:#ddd6fe">
+        <i class="f7-icons" style="color:#7c3aed">info_circle_fill</i>
+        <span style="color:#5b21b6;font-weight:700">كل عمليات الكتم والطرد والحظر (مع الاي بي) — زر «إلغاء» حسب نوع الإجراء للتراجع عنه</span>
+      </div>
+      <div id="modlogList"><div class="loading"><i class="f7-icons">arrow2_circlepath</i>جاري التحميل...</div></div>`,
+    bind: async () => {
+      const render = async () => {
+        const list = await api('/api/admin/modlog');
+        $('#modlogList').innerHTML = list.length ? list.map(modlogCard).join('') : '<div class="empty">لا توجد إجراءات بعد</div>';
+        $$('#modlogList .undo-mod').forEach(b => b.onclick = async () => {
+          b.disabled = true;
+          try { const d = await api('/api/admin/modlog/' + b.dataset.id + '/undo', 'POST'); toast(d.msg || 'تم التراجع'); }
+          catch (e) { toast(e.error || 'تعذر التراجع', false); }
+          render();
+        });
+      };
+      await render();
+      window._renderModlog = render;
     }
   },
 
@@ -935,6 +1032,12 @@ window.muteUser = async (id, m) => {
   if (window._renderUsers) window._renderUsers($('#searchUser') ? $('#searchUser').value : '');
 };
 window.unban = async (id) => { await api('/api/admin/bans/' + id, 'DELETE'); toast('تمت إزالة الحظر'); loadPage('bans'); };
+window.delRoomAdmin = async (id) => {
+  if (!confirm('إزالة هذا الادمن من الغرفة؟')) return;
+  await api('/api/admin/roomadmins/' + id, 'DELETE');
+  toast('تمت الإزالة');
+  loadPage('roomAdmins');
+};
 window.delAdmin = async (id, name) => {
   if (!confirm(`حذف الحساب الإداري "${name}" ؟`)) return;
   await api('/api/admin/users/' + id, 'DELETE');
@@ -953,6 +1056,39 @@ window.clearRoomForm = () => { editingRoom = null; loadPage('roomAdd'); };
 window.editWord = (id, w) => { editingWord = id; $('#newWord').value = w; $('#newWord').focus(); toast('عدّل الكلمة ثم اضغط اضافة'); };
 window.delWord = async (id) => { await api('/api/admin/words/' + id, 'DELETE'); toast('تم حذف الكلمة'); await renderWords(); };
 window.delVerified = async (id) => { await api('/api/admin/verified/' + id, 'DELETE'); toast('تم إزالة العضو من التوثيق'); await renderVerified(); };
+
+// بطاقة سجل اجراءات المشرفين (مع زر إلغاء حسب نوع الإجراء)
+const MOD_ACT = {
+  mute:   { icon: 'mic_slash_fill', color: '#b45309', bg: '#fef3c7', label: 'كتم المستخدم', undo: 'إلغاء الكتم' },
+  unmute: { icon: 'mic_fill',       color: '#047857', bg: '#d1fae5', label: 'فك الكتم',      undo: 'كتم مجدداً' },
+  kick:   { icon: 'person_crop_circle_badge_xmark', color: '#b91c1c', bg: '#fee2e2', label: 'طرد المستخدم', undo: 'إلغاء الطرد' },
+  ban:    { icon: 'nosign',         color: '#b91c1c', bg: '#fee2e2', label: 'حظر المستخدم', undo: 'إلغاء الحظر' },
+  unban:  { icon: 'checkmark_circle_fill', color: '#047857', bg: '#d1fae5', label: 'فك الحظر', undo: 'حظر مجدداً' }
+};
+function modlogCard(l) {
+  const a = MOD_ACT[l.action] || { icon: 'clock_fill', color: '#6b7280', bg: '#eef2ff', label: esc(l.action), undo: 'إلغاء' };
+  const dt = new Date(l.created_at * 1000);
+  return `
+    <div class="list-card mod-card">
+      <span class="mod-ic" style="background:${a.bg};color:${a.color}"><i class="f7-icons">${a.icon}</i></span>
+      <div class="mod-mid">
+        <div class="mod-title"><b>${a.label}</b><span class="mod-sep"></span><span class="mod-date">${dt.toLocaleDateString('ar')} ${dt.toLocaleTimeString('ar', { hour: '2-digit', minute: '2-digit' })}</span></div>
+        <div class="mod-sub">
+          <span class="mod-who">${esc(l.actor_name || '—')}</span>
+          <i class="f7-icons mod-arr">arrow_right</i>
+          <span class="mod-who t">${esc(l.target_name || '—')}</span>
+          ${l.target_ip ? `<span class="chip" dir="ltr" style="color:#4338ca;margin-inline-start:4px">🌐 ${esc(l.target_ip)}</span>` : ''}
+          ${l.reason ? `<span class="chip" style="color:#92400e">سبب: ${esc(l.reason)}</span>` : ''}
+        </div>
+      </div>
+      <button class="btn btn-sm undo-mod" data-id="${l.id}" style="background:${a.bg};color:${a.color};box-shadow:none;flex:0 0 auto"><i class="f7-icons">arrow_uturn_left</i> ${a.undo}</button>
+    </div>`;
+}
+window.undoMod = async (id) => {
+  try { const d = await api('/api/admin/modlog/' + id + '/undo', 'POST'); toast(d.msg || 'تم التراجع'); }
+  catch (e) { toast(e.error || 'تعذر التراجع', false); }
+  if (window._renderModlog) window._renderModlog();
+};
 
 async function renderWords() {
   const words = await api('/api/admin/words');

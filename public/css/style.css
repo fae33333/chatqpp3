@@ -366,7 +366,8 @@ body { background:#0e1220; display:flex; justify-content:center; }
 
 /* قائمة إجراءات المستخدم */
 .usheet { border-radius:22px 22px 0 0; padding:12px 14px 22px; }
-.usheet-name { text-align:center; font-weight:900; font-size:15px; padding-bottom:12px; border-bottom:1px solid #f0f1f6; margin-bottom:8px; color:var(--navy); }
+.usheet-name { text-align:center; font-weight:900; font-size:15px; padding-bottom:6px; color:var(--navy); }
+.usheet-role { text-align:center; font-size:11.5px; font-weight:800; color:#9aa0b4; padding-bottom:12px; border-bottom:1px solid #f0f1f6; margin-bottom:8px; }
 .us-opt {
   width:100%; background:none; border:0; display:flex; align-items:center; gap:12px; padding:13px 8px; font-size:14px;
   font-weight:800; color:var(--navy); cursor:pointer; border-bottom:1px solid #f6f7fa; text-align:right;
@@ -376,6 +377,12 @@ body { background:#0e1220; display:flex; justify-content:center; }
 .us-opt.st > i:last-child, .us-opt > i:last-child { margin-inline-start:auto; color:#c3c8d8; font-size:16px; width:auto; }
 .us-opt.st > i:first-child { color:var(--navy); }
 .us-cancel { width:100%; background:none; border:0; padding:13px; text-align:center; color:#6b7280; font-weight:800; font-size:14px; cursor:pointer; }
+.us-mod { margin:6px 0 2px; border-radius:12px; background:#fff5f5; border:1px solid #ffe1e1; padding:6px 8px; }
+.us-mod-title { display:flex; align-items:center; gap:7px; padding:6px 8px; font-size:11.5px; font-weight:900; color:#dc2626; }
+.us-mod-title i { font-size:15px; }
+.us-opt.danger i { color:#dc2626; }
+.us-opt.danger { color:#b91c1c; border-bottom:1px solid #ffe9e9; }
+.us-opt.danger:last-child { border-bottom:0; }
 
 /* متجر الهدايا */
 .gsheet, .upsheet { border-radius:20px 20px 0 0; }
@@ -835,3 +842,59 @@ textarea.pf-input { font-family:inherit; resize:none; line-height:1.8; min-heigh
 .vg-e img { width:56px; height:56px; object-fit:contain; }
 .gift-msg .ge img, .ge-img { width:40px; height:40px; object-fit:contain; }
 .gift-cell .ge img { width:44px; height:44px; object-fit:contain; }
+
+/* ===== مؤشر الحالة (ستوري) ===== */
+.c-mic.has-status::after {
+  content:''; position:absolute; inset:-3px; border-radius:20px;
+  border:2.5px solid #f59e0b; box-shadow:0 0 0 2px rgba(245,158,11,.35);
+  animation:st-pulse 2s ease infinite;
+}
+@keyframes st-pulse { 0%,100%{opacity:1} 50%{opacity:.45} }
+.users-row .uava.has-status::after {
+  content:''; position:absolute; inset:-3px; border-radius:50%;
+  border:2.5px solid #f59e0b;
+}
+.cbtn#btnAddStatus { background:linear-gradient(135deg,#f59e0b,#ef4444); }
+
+/* ===== إضافة الحالة ===== */
+.st-add { background:#fff; border:1px solid #e7eaf5; border-radius:14px; padding:14px; margin-bottom:8px; }
+.st-add textarea { width:100%; border:1.5px solid #e3e7f2; border-radius:12px; padding:11px 14px; font-family:inherit; font-size:14px; font-weight:600; color:#1f2937; resize:vertical; box-sizing:border-box; outline:none; }
+.st-add textarea:focus { border-color:var(--main); }
+.st-actions { display:flex; align-items:center; gap:8px; margin-top:10px; flex-wrap:wrap; }
+.st-act { flex:1; display:flex; align-items:center; justify-content:center; gap:6px; border:1.5px solid #e3e7f2; background:#f6f7fc; color:#4b5563; border-radius:11px; padding:10px 8px; font-size:13px; font-weight:800; cursor:pointer; }
+.st-act i { font-size:16px; color:var(--main); }
+.st-pub { display:flex; align-items:center; gap:6px; border:0; background:var(--main); color:#fff; border-radius:11px; padding:11px 18px; font-size:13px; font-weight:800; cursor:pointer; }
+.st-hint { margin-top:8px; font-size:12px; color:#92400e; background:#fef3c7; border-radius:9px; padding:8px 10px; font-weight:700; }
+.st-mine-item { display:flex; align-items:center; gap:10px; background:#fff; border:1px solid #e7eaf5; border-radius:12px; padding:10px 12px; margin-bottom:8px; }
+.st-mine-thumb { width:44px; height:44px; border-radius:10px; background:linear-gradient(135deg,#f59e0b,#ef4444); display:flex; align-items:center; justify-content:center; color:#fff; font-size:20px; overflow:hidden; flex:none; }
+.st-mine-thumb img { width:100%; height:100%; object-fit:cover; }
+.st-mine-thumb video { width:100%; height:100%; object-fit:cover; }
+.st-mine-info { flex:1; min-width:0; }
+.st-mine-info b { font-size:13px; color:#1f2937; display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.st-mine-info span { font-size:11px; color:#9aa0b5; font-weight:700; }
+.st-mine-btns { display:flex; gap:6px; }
+.st-mine-btns button { border:0; border-radius:9px; padding:7px 10px; font-size:11.5px; font-weight:800; cursor:pointer; }
+
+/* ===== مشاهدة الحالة ===== */
+.st-view { position:absolute; inset:0; background:#0f1222; display:flex; flex-direction:column; }
+.st-vtop { display:flex; align-items:center; justify-content:space-between; padding:14px 16px; color:#fff; z-index:3; }
+.st-vuser { display:flex; align-items:center; gap:10px; min-width:0; }
+.st-vava { width:38px; height:38px; border-radius:50%; background:linear-gradient(150deg,#f59e0b,#ef4444); display:flex; align-items:center; justify-content:center; overflow:hidden; flex:none; }
+.st-vava img { width:100%; height:100%; object-fit:cover; }
+.st-vmeta { display:flex; flex-direction:column; min-width:0; }
+.st-vmeta b { font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.st-vmeta span { font-size:11px; color:#c3c8d8; }
+.st-vclose { width:32px; height:32px; border-radius:50%; background:rgba(255,255,255,.14); display:flex; align-items:center; justify-content:center; cursor:pointer; }
+.st-vclose i { font-size:17px; color:#fff; }
+.st-vbody { flex:1; display:flex; align-items:center; justify-content:center; overflow:hidden; position:relative; }
+.st-vbody img { max-width:100%; max-height:100%; object-fit:contain; }
+.st-vbody video { max-width:100%; max-height:100%; }
+.st-vbody .st-vtext { color:#fff; font-size:21px; font-weight:800; text-align:center; padding:0 30px; line-height:1.7; max-width:80%; }
+.st-vfoot { display:flex; align-items:center; justify-content:center; gap:16px; padding:14px; color:#c3c8d8; font-size:12.5px; font-weight:700; z-index:3; }
+.st-nav { width:34px; height:34px; border-radius:50%; background:rgba(255,255,255,.14); display:flex; align-items:center; justify-content:center; cursor:pointer; }
+.st-nav i { color:#fff; font-size:17px; }
+#stVCount { color:#f59e0b; }
+/* شريط تقدّم الحالة */
+.st-vbar { position:absolute; top:6px; left:8px; right:8px; display:flex; gap:4px; z-index:4; }
+.st-vbar span { flex:1; height:3px; border-radius:3px; background:rgba(255,255,255,.25); overflow:hidden; }
+.st-vbar span i { display:block; height:100%; width:0%; background:#fff; transition:width 5s linear; }

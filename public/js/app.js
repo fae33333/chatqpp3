@@ -11,12 +11,24 @@ function savePrefs() { localStorage.setItem('prefs', JSON.stringify(PREFS)); }
 let ROOMS = [], ROOM_COUNTS = {}, CUR_ROOM = null, CUR_TAB = 'default';
 let ROOM_PWD = {};                       // كلمات مرور الغرف الصحيحة لهذه الجلسة (لا تُعاد كتابتها)
 const isAdmRank = () => ME && (ME.rank === 'superadmin' || ME.rank === 'admin');
+// صلاحيات الإشراف للمستخدم الحالي في الغرفة الحالية
+//  سوبر ادمن/ادمن : كتم + طرد + حظر — ادمن الغرفة : كتم + طرد فقط (في غرفه المعيّنة)
+function modRights() {
+  if (!ME) return { mute: false, kick: false, ban: false };
+  if (ME.rank === 'superadmin' || ME.rank === 'admin')
+    return { mute: true, kick: true, ban: true };
+  if (ME.rank === 'roomadmin' && CUR_ROOM && (ME.room_admin_rooms || []).includes(CUR_ROOM.id))
+    return { mute: true, kick: true, ban: false };
+  return { mute: false, kick: false, ban: false };
+}
 let ROOM_USERS = [], CUR_TARGET = null;
 let GIFTS = [], SEL_GIFT = null, G_QTY = 1;
 let UP_PLAN = 'vip', UP_MONTHS = 1, UP_TARGET = null;
 let PM_WITH = null, PRIV_UNREAD = 0;
 let NOTIFS = [];
 let SEL_AVATAR = null, AVA_CAT = 'def';
+let STATUS_MINE = [], STATUS_BY_USER = {};         // الحالات (ستوري)
+let VIEW_STATUSES = [], VIEW_STATUS_IDX = 0, VIEW_OWNER = null, VIEW_TIMER = null;
 
 // ---------- أدوات ----------
 async function api(url, method = 'GET', body, isForm = false) {
@@ -139,6 +151,7 @@ function beep(freq = 660, dur = .12) {
   const d = await api('/api/me');
   if (d.user) { ME = d.user; MYBADGE = d.badge; onLoggedIn(); }
   await loadRooms();
+  await loadStatuses();
   connectSocketRetry();
 })();
 
@@ -193,10 +206,16 @@ function connectSocket() {
   SOCKET.on('sync', async () => {
     try { SETTINGS = await api('/api/public-settings'); applySettings(); } catch (e) { }
     try { GIFTS = await api('/api/gifts'); } catch (e) { }
+    try { const me2 = await api('/api/me'); if (me2.user) ME = me2.user; } catch (e) { }   // تحديث الصلاحيات/غرف الإشراف
+    if (CUR_ROOM) api('/api/rooms/' + CUR_ROOM.id + '/users').then(u => { ROOM_USERS = u; renderUsers(); }).catch(() => { });   // تحديث الكتم/الشارات حسب الغرفة
+    loadStatuses();       // تحديث حلقات الحالة والمشاهدات
     loadStickers();
     loadRooms();          // تحديث قائمة الغرف واللوحة المضغوطة داخل الغرفة
     if (typeof renderRoomsPanel === 'function') renderRoomsPanel();
   });
+  // طرد/حظر مباشر من مشرف داخل الغرفة
+  SOCKET.on('kicked', (p) => { toast(p.text || 'تم طردك من الغرفة', false); if (CUR_ROOM) { leaveRoom(); showScreen('rooms'); } });
+  SOCKET.on('banned', (p) => { toast(p.text || 'تم حظرك من الشات', false); if (CUR_ROOM) { leaveRoom(); showScreen('rooms'); } });
   SOCKET.on('announce', (a) => {
     pushNotif('bolt_badge_a_fill', '📢 ' + a.text);
     showAnnounce(a.text);
@@ -417,8 +436,8 @@ function renderUsers() {
   $('#usersList').innerHTML = list.length ? list.map(u => `
     <div class="users-row" data-id="${u.id}">
       <img class="ubadge" src="/badges/${badgeOf(u)}" alt="">
-      <div class="uava">${avatarHtml(u.avatar)}<span class="dot ${statusDot(u.status)}"></span></div>
-      <div class="uname" style="color:${userColor(u)};font-weight:${userWeight(u)}">${esc(u.username)}${u.verified ? ' <i class="f7-icons vcheck">checkmark_seal_fill</i>' : ''}</div>
+      <div class="uava${hasStatus(u.id) ? ' has-status' : ''}">${avatarHtml(u.avatar)}<span class="dot ${statusDot(u.status)}"></span></div>
+      <div class="uname" style="color:${userColor(u)};font-weight:${userWeight(u)}">${esc(u.username)}${u.verified ? ' <i class="f7-icons vcheck">checkmark_seal_fill</i>' : ''}${u.muted ? ' <i class="f7-icons muted-ic" style="font-size:13px;color:#d97706">mic_slash_fill</i>' : ''}</div>
       <img class="ugender" src="/badges/${GENDER_IMG[u.gender] || 'secret.png'}" alt="">
     </div>`).join('') : '<div class="pv-empty"><div>لا يوجد متصلون</div></div>';
   $$('#usersList .users-row').forEach(r => r.onclick = () => openUserSheet(+r.dataset.id));
@@ -428,7 +447,7 @@ function renderUsers() {
 let US_MSG = null;   // سياق الرسالة عند فتح الورقة من النقر على صورة رسالة
 function openUserSheet(uid, msg) {
   setUsersPanel(false);
-  // النقر على اسمي/صورتي يفتح «تغيير الحالة» بدل ورقة المستخدم
+  // النقر على اسمي يفتح قائمة الحالة السريعة (تغيير الحالة + مشاهدة حالتي + إضافة حالة)
   if (ME && uid === ME.id) { openOv('quickOv'); return; }
   let u = ROOM_USERS.find(x => x.id === uid);
   if (!u && msg) u = { id: uid, username: msg.username, avatar: msg.avatar || '', rank: msg.rank || 'user', membership: msg.membership || 'none', gender: msg.gender || 'secret' };
@@ -436,7 +455,27 @@ function openUserSheet(uid, msg) {
   CUR_TARGET = u;
   US_MSG = msg || null;
   $('#usName').textContent = u.username;
+  $('#usRole').textContent = u.rank !== 'user' ? RANK_NAMES[u.rank] : (MEM_NAMES[u.membership] || 'زائر');
   $('#usReply').style.display = US_MSG ? '' : 'none';
+  $('#usPrivate').style.display = '';
+  $('#usGift').style.display = '';
+  $('#usUpgrade').style.display = '';
+  $('#usReport').style.display = '';
+  $('#usProfile').style.display = '';
+  // إظهار أزرار الإشراف حسب صلاحيتي (ولا تظهر ضد الإداريين)
+  const r = modRights();
+  const canModTarget = !u || (u.rank !== 'superadmin' && !(u.rank === 'admin' && ME.rank !== 'superadmin'));
+  $('#usModGroup').style.display = (canModTarget && (r.mute || r.kick || r.ban)) ? '' : 'none';
+  $('#usModMute').style.display = (canModTarget && r.mute) ? '' : 'none';
+  $('#usModKick').style.display = (canModTarget && r.kick) ? '' : 'none';
+  $('#usModBan').style.display = (canModTarget && r.ban) ? '' : 'none';
+  // زر «مشاهدة الحالة» يظهر إذا كان للمستخدم حالة نشطة
+  const stBtn = $('#usViewStatus');
+  stBtn.style.display = hasStatus(uid) ? '' : 'none';
+  stBtn.innerHTML = '<i class="f7-icons">sparkles</i> مشاهدة الحالة';
+  // زر الكتم يتحوّل إلى «إلغاء الكتم» إذا كان المستخدم مكتوماً حالياً
+  const isMuted = !!u.muted;
+  $('#usModMute').innerHTML = `<i class="f7-icons">${isMuted ? 'mic_fill' : 'mic_slash_fill'}</i> ${isMuted ? 'إلغاء الكتم' : 'كتم المستخدم'}`;
   openOv('userSheet');
 }
 // الرد على الرسالة: شريط وردي فوق حقل الكتابة (الاسم + اقتباس + زر إلغاء)
@@ -451,9 +490,31 @@ $('#usReply').onclick = () => { closeOv('userSheet'); if (US_MSG) setReply(US_MS
 $('#usPrivate').onclick = () => { closeOv('userSheet'); if (!ME.registered) return openOv('needRegOv'); openPrivateWith(CUR_TARGET); };
 $('#usGift').onclick = () => { closeOv('userSheet'); if (!ME.registered) return openOv('needRegOv'); openGifts(CUR_TARGET); };
 $('#usUpgrade').onclick = () => { closeOv('userSheet'); if (!ME.registered) return openOv('needRegOv'); openUpgrade(CUR_TARGET); };
-$('#usBan').onclick = async () => {
+$('#usModMute').onclick = async () => {
+  const t = CUR_TARGET; closeOv('userSheet');
+  const toMute = !t.muted;   // إن كان مكتوماً نلغيه، وإن لم يكن نكتمه
+  try {
+    await api('/api/mod/mute', 'POST', { target_id: t.id, room_id: CUR_ROOM ? CUR_ROOM.id : 0, muted: toMute });
+    t.muted = toMute;
+    const ru = ROOM_USERS.find(x => x.id === t.id);
+    if (ru) ru.muted = toMute;
+    renderUsers();
+    toast(toMute ? 'تم كتم ' + t.username + ' (بالاي بي) 🔇' : 'تم إلغاء الكتم عن ' + t.username + ' 🔊');
+  }
+  catch (e) { toast(e.error || 'لا تملك صلاحية الكتم', false); }
+};
+$('#usModKick').onclick = async () => {
+  const t = CUR_TARGET;
+  if (!confirm('هل تريد طرد ' + t.username + ' من الغرفة؟')) return;
   closeOv('userSheet');
-  try { await api(`/api/admin/users/${CUR_TARGET.id}/ban`, 'POST', { banned: true, reason: 'حظر من الغرفة' }); toast('تم حظر ' + CUR_TARGET.username); }
+  try { await api('/api/mod/kick', 'POST', { target_id: t.id, room_id: CUR_ROOM ? CUR_ROOM.id : 0 }); toast('تم طرد ' + t.username + ' (بالاي بي) 🚪'); }
+  catch (e) { toast(e.error || 'لا تملك صلاحية الطرد', false); }
+};
+$('#usModBan').onclick = async () => {
+  const t = CUR_TARGET;
+  if (!confirm('سيتم حظر ' + t.username + ' وجهازه (الاي بي) نهائياً، هل أنت متأكد؟')) return;
+  closeOv('userSheet');
+  try { await api('/api/mod/ban', 'POST', { target_id: t.id, room_id: CUR_ROOM ? CUR_ROOM.id : 0, reason: 'حظر من الغرفة' }); toast('تم حظر ' + t.username + ' (بالاي بي) ⛔'); }
   catch (e) { toast(e.error || 'لا تملك صلاحية الحظر', false); }
 };
 $('#usReport').onclick = async () => {
@@ -462,6 +523,31 @@ $('#usReport').onclick = async () => {
   toast('تم إرسال البلاغ للإدارة ✅');
 };
 $('#usProfile').onclick = () => { closeOv('userSheet'); openProfile(CUR_TARGET.id); };
+$('#usViewStatus').onclick = () => { const uid = CUR_TARGET.id; closeOv('userSheet'); openStatusView(uid); };
+
+// ===== أزرار الحالة (إضافة/نشر/مشاهدة) =====
+$('#btnAddStatus').onclick = () => openStatusAdd();
+$('#stPublish').onclick = () => {
+  const t = $('#stText').value.trim();
+  if (t) publishStatus('text', t);
+  else toast('اكتب نصاً أو ارفع صورة/فيديو', false);
+};
+$('#stImgBtn').onclick = () => $('#stImgFile').click();
+$('#stVidBtn').onclick = () => $('#stVidFile').click();
+$('#stImgFile').onchange = () => {
+  const f = $('#stImgFile').files[0];
+  if (f) { $('#stHint').style.display = ''; $('#stHint').textContent = '📷 سيتم نشر الصورة: ' + f.name; publishStatus('image', null, f); }
+};
+$('#stVidFile').onchange = () => {
+  const f = $('#stVidFile').files[0];
+  if (f) { $('#stHint').style.display = ''; $('#stHint').textContent = '🎬 سيتم نشر الفيديو: ' + f.name; publishStatus('video', null, f); }
+};
+$('#stVPrev').onclick = () => { if (VIEW_STATUS_IDX > 0) { VIEW_STATUS_IDX--; showStatusCurrent(); } };
+$('#stVNext').onclick = () => { if (VIEW_STATUS_IDX < VIEW_STATUSES.length - 1) { VIEW_STATUS_IDX++; showStatusCurrent(); } };
+// إغلاق المشاهدة يوقف المؤقت
+$$('#statusViewOv .st-vclose').forEach(b => b.onclick = closeStatusView);
+window.openStatusViews = openStatusViews;
+window.delStatus = delStatus;
 
 // =====================================================
 //  الهدايا
@@ -820,6 +906,8 @@ function openMenu() {
 // قائمة الحالة السريعة
 function openQuick() {
   if (!ME) return;
+  // إظهار «مشاهدة حالتي» فقط إذا كان لدي حالة منشورة
+  $('#quickStatus').style.display = STATUS_MINE.length ? '' : 'none';
   openOv('quickOv');
 }
 $$('.us-opt.st[data-status]').forEach(b => b.onclick = async () => {
@@ -830,6 +918,8 @@ $$('.us-opt.st[data-status]').forEach(b => b.onclick = async () => {
   toast('تم تغيير الحالة إلى ' + statusName(ME.status));
 });
 $('#quickAccount').onclick = () => { closeOv('quickOv'); openProfile(ME.id); };
+$('#quickStatus').onclick = () => { closeOv('quickOv'); openStatusView(ME.id); };
+$('#quickAddStatus').onclick = () => { closeOv('quickOv'); openStatusAdd(); };
 $('#quickAvatar').onclick = () => { closeOv('quickOv'); if (!ME.registered) return openOv('needRegOv'); openAvatars(); };
 // بطاقة العضو في القائمة الرئيسية تعرض قائمة الحالة السريعة
 $('#menuUserCard').onclick = () => { closeOv('menuOv'); openQuick(); };
@@ -986,6 +1076,139 @@ async function openNotifs() {
 }
 
 // =====================================================
+//  الحالات (ستوري: نص / صورة / فيديو)
+// =====================================================
+function hasStatus(uid) {
+  if (uid === ME.id) return STATUS_MINE.length > 0;
+  return !!(STATUS_BY_USER[uid] && STATUS_BY_USER[uid].length);
+}
+async function loadStatuses() {
+  if (!ME) return;
+  try {
+    const d = await api('/api/statuses');
+    STATUS_MINE = d.mine || [];
+    STATUS_BY_USER = {};
+    (d.others || []).forEach(s => { (STATUS_BY_USER[s.user_id] = STATUS_BY_USER[s.user_id] || []).push(s); });
+  } catch (e) { }
+  updateStatusIndicators();
+}
+function updateStatusIndicators() {
+  const mic = $('#micPill');
+  if (mic) mic.classList.toggle('has-status', STATUS_MINE.length > 0);
+  if ($('#usersList')) renderUsers();   // إعادة رسم الحلقات حول الصور
+}
+function statusThumb(s) {
+  if (s.type === 'image') return `<img src="${esc(s.content)}" alt="">`;
+  if (s.type === 'video') return `<video src="${esc(s.content)}" muted></video>`;
+  return '<i class="f7-icons">textformat</i>';
+}
+// فتح نافذة إضافة/إدارة حالتي
+function openStatusAdd() {
+  if (!ME) return openLogin();
+  renderMyStatuses();
+  $('#stText').value = ''; $('#stHint').style.display = 'none';
+  openOv('statusAddOv');
+}
+async function renderMyStatuses() {
+  await loadStatuses();
+  $('#stMineList').innerHTML = STATUS_MINE.length ? STATUS_MINE.map(s => `
+    <div class="st-mine-item">
+      <div class="st-mine-thumb">${statusThumb(s)}</div>
+      <div class="st-mine-info">
+        <b>${s.type === 'text' ? esc(s.content) : (s.type === 'image' ? '📷 صورة' : '🎬 فيديو')}</b>
+        <span>👁 ${s.viewer_count} مشاهدة • ${new Date(s.created_at * 1000).toLocaleString('ar')}</span>
+      </div>
+      <div class="st-mine-btns">
+        <button style="background:#eef2ff;color:#4f46e5" onclick="openStatusViews(${s.id})"><i class="f7-icons">eye_fill</i> المشاهدون</button>
+        <button style="background:#fee2e2;color:#b91c1c" onclick="delStatus(${s.id})"><i class="f7-icons">trash</i></button>
+      </div>
+    </div>`).join('') : '<div class="pv-empty" style="padding:22px"><div>لا توجد حالة منشورة — انشر صورة أو فيديو أو نصاً</div></div>';
+}
+// نشر حالة
+async function publishStatus(type, content, file) {
+  try {
+    if (file) {
+      const fd = new FormData();
+      fd.append('file', file);
+      await api('/api/statuses', 'POST', fd, true);
+    } else {
+      await api('/api/statuses', 'POST', { text: content });
+    }
+    toast('تم نشر الحالة ✨');
+    renderMyStatuses();
+    loadStatuses();
+  } catch (e) { toast(e.error || 'تعذر نشر الحالة', false); }
+}
+// فتح مشاهدة حالات مستخدم
+function openStatusView(uid) {
+  const list = uid === ME.id ? STATUS_MINE.slice() : (STATUS_BY_USER[uid] || []).slice();
+  if (!list.length) return toast('لا توجد حالة حالياً', false);
+  VIEW_STATUSES = list; VIEW_STATUS_IDX = 0; VIEW_OWNER = uid;
+  showStatusCurrent();
+  openOv('statusViewOv');
+}
+function stopStatusTimer() { if (VIEW_TIMER) { clearTimeout(VIEW_TIMER); VIEW_TIMER = null; } }
+function showStatusCurrent() {
+  stopStatusTimer();
+  const s = VIEW_STATUSES[VIEW_STATUS_IDX];
+  if (!s) return;
+  const isMine = s.user_id === ME.id;
+  $('#stVName').textContent = isMine ? 'حالتي' : s.username;
+  $('#stVTime').textContent = new Date(s.created_at * 1000).toLocaleString('ar');
+  $('#stVAva').innerHTML = s.avatar && s.avatar.startsWith('/') ? `<img src="${esc(s.avatar)}">` : `<i class="f7-icons">person_fill</i>`;
+  $('#stVCount').textContent = `👁 ${s.viewer_count}`;
+  const vv = $('#stVViews');
+  vv.style.display = isMine ? 'flex' : 'none';
+  vv.onclick = isMine ? () => openStatusViews(s.id) : null;
+  // محتوى الحالة
+  const body = $('#stVBody');
+  const bars = VIEW_STATUSES.map((_, i) => `<span><i data-b="${i}"></i></span>`).join('');
+  body.innerHTML = `<div class="st-vbar">${bars}</div>` +
+    (s.type === 'image' ? `<img src="${esc(s.content)}" alt="">`
+      : s.type === 'video' ? `<video src="${esc(s.content)}" autoplay playsinline controls></video>`
+      : `<div class="st-vtext">${esc(s.content)}</div>`);
+  // تسجيل مشاهدة (لا نسجّل على حالتي أنا)
+  if (!isMine) api('/api/statuses/' + s.id + '/view', 'POST').then(() => loadStatuses()).catch(() => { });
+  // شريط التقدم + الانتقال التلقائي
+  const fill = () => {
+    const active = body.querySelector(`.st-vbar span i[data-b="${VIEW_STATUS_IDX}"]`);
+    if (active) { active.style.transition = 'none'; active.style.width = '0%'; requestAnimationFrame(() => requestAnimationFrame(() => { active.style.transition = ''; active.style.width = '100%'; })); }
+  };
+  fill();
+  const next = () => {
+    if (VIEW_STATUS_IDX < VIEW_STATUSES.length - 1) { VIEW_STATUS_IDX++; showStatusCurrent(); }
+    else closeOv('statusViewOv');
+  };
+  if (s.type === 'video') {
+    const v = body.querySelector('video');
+    if (v) { v.onended = next; v.onerror = next; }
+  } else {
+    VIEW_TIMER = setTimeout(next, 5000);
+  }
+  $('#stVPrev').style.display = VIEW_STATUS_IDX === 0 ? 'none' : 'flex';
+  $('#stVNext').style.display = VIEW_STATUS_IDX >= VIEW_STATUSES.length - 1 ? 'none' : 'flex';
+}
+function closeStatusView() { stopStatusTimer(); closeOv('statusViewOv'); }
+// المشاهدون
+async function openStatusViews(statusId) {
+  try {
+    const rows = await api('/api/statuses/' + statusId + '/views');
+    $('#statusViewsList').innerHTML = rows.length ? rows.map(v => `
+      <div class="pv-row">
+        <div class="uava">${v.avatar && v.avatar.startsWith('/') ? `<img src="${esc(v.avatar)}">` : `<i class="f7-icons">person_fill</i>`}</div>
+        <div class="ptxt"><div class="pname">${esc(v.viewer_name)}</div>
+        <div class="plast">${new Date(v.created_at * 1000).toLocaleString('ar')}</div></div>
+      </div>`).join('') : '<div class="pv-empty" style="padding:30px"><div>لا يوجد مشاهدون بعد 👀</div></div>';
+    openOv('statusViewsOv');
+  } catch (e) { toast(e.error || 'تعذر تحميل المشاهدات', false); }
+}
+async function delStatus(statusId) {
+  if (!confirm('حذف هذه الحالة؟')) return;
+  try { await api('/api/statuses/' + statusId, 'DELETE'); toast('تم حذف الحالة'); renderMyStatuses(); loadStatuses(); }
+  catch (e) { toast(e.error || 'تعذر الحذف', false); }
+}
+
+// =====================================================
 //  المصادقة
 // =====================================================
 function openLogin() {
@@ -1074,6 +1297,7 @@ function onLoggedIn() {
   // أيقونة القائمة في التنقل السفلي تصبح صورة العضو (استبدال كامل لتجنب التداخل)
   const bm = $('#bnMenu');
   bm.innerHTML = `<span class="bn-ava" id="bnMenuIcon">${avatarHtml(ME.avatar)}<em><i class="f7-icons">circle_grid3x3_fill</i></em></span><span>القائمة</span>`;
+  loadStatuses();   // تحديث حلقات الحالة حول المايك والأفاتار
 }
 let _sockTried = false;
 function connectSocketRetry() {
